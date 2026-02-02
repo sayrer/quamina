@@ -41,7 +41,8 @@ type smallTable struct {
 	ceilings       []byte
 	steps          []*faState
 	epsilons       []*faState
-	lastVisitedGen uint64 // generation counter for epsilon closure traversal
+	lastVisitedGen uint64         // generation counter for epsilon closure traversal
+	fastSteps      [256]*faState  // direct lookup array for O(1) step
 }
 
 // newSmallTable mostly exists to enforce the constraint that every smallTable has a byteCeiling entry at
@@ -73,6 +74,18 @@ func (t *smallTable) isJustEpsilons() bool {
 	return len(t.steps) == 1 && t.steps[0] == nil && len(t.epsilons) != 0
 }
 
+// computeFastSteps populates the fastSteps array for O(1) lookup.
+// Called during epsilon closure computation after the automaton is built.
+func (t *smallTable) computeFastSteps() {
+	byteIndex := 0
+	for i, ceiling := range t.ceilings {
+		for byteIndex < int(ceiling) {
+			t.fastSteps[byteIndex] = t.steps[i]
+			byteIndex++
+		}
+	}
+}
+
 // step finds the list of states that result from a transition on the utf8Byte argument. The states can come
 // as a result of looking in the table structure, and also the "epsilon" transitions that occur on every
 // input byte.  Since this is the white-hot center of Quamina's runtime CPU, we don't want to be merging
@@ -80,17 +93,7 @@ func (t *smallTable) isJustEpsilons() bool {
 // and step fills them in.
 func (t *smallTable) step(utf8Byte byte, out *stepOut) {
 	out.epsilons = t.epsilons
-	for index, ceiling := range t.ceilings {
-		if utf8Byte < ceiling {
-			out.step = t.steps[index]
-			return
-		}
-	}
-	_, forbidden := forbiddenBytes[utf8Byte]
-	if forbidden {
-		return
-	}
-	panic("Malformed smallTable")
+	out.step = t.fastSteps[utf8Byte]
 }
 
 // dStep takes a step through an NFA in the case where it is known that the NFA in question

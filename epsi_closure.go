@@ -26,6 +26,7 @@ func closureForNfa(table *smallTable, bufs *closureBuffers) {
 		return
 	}
 	table.lastVisitedGen = bufs.generation
+	table.computeFastSteps()
 
 	for _, state := range table.steps {
 		if state != nil {
