@@ -44,11 +44,20 @@ func readShellStyleSpecial(pb *patternBuild, valsIn []typedVal) (pathVals []type
 
 // makeShellStyleFA does what it says.  It is precisely equivalent to a regex with the only operator
 // being a single ".*". Once we've implemented regular expressions we can use that to more or less eliminate this
+// If useThisTransition is non-nil, it will be used as the field transition instead of creating a new one.
 func makeShellStyleFA(val []byte, pp printer) (start *smallTable, nextField *fieldMatcher) {
+	return makeShellStyleFAWithTransition(val, nil, pp)
+}
+
+func makeShellStyleFAWithTransition(val []byte, useThisTransition *fieldMatcher, pp printer) (start *smallTable, nextField *fieldMatcher) {
 	state := &faState{table: newSmallTable()}
 	start = state.table
 	pp.labelTable(start, "SHELLSTYLE")
-	nextField = newFieldMatcher()
+	if useThisTransition != nil {
+		nextField = useThisTransition
+	} else {
+		nextField = newFieldMatcher()
+	}
 
 	// for each byte in the pattern
 	valIndex := 0

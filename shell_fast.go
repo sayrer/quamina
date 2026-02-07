@@ -11,6 +11,7 @@ import (
 // For patterns like *foo*bar*baz*, this finds each literal in order,
 // which is O(n) where n is input length, using SIMD-optimized string search.
 type shellFastMatcher struct {
+	pattern     []byte   // original pattern (with quotes) for NFA migration
 	literals    [][]byte // literal segments between wildcards
 	startsWild  bool     // pattern starts with *
 	endsWild    bool     // pattern ends with *
@@ -21,12 +22,12 @@ type shellFastMatcher struct {
 // newShellFastMatcher creates a fast matcher for a shell-style pattern.
 // Returns nil if the pattern contains features beyond simple * wildcards
 // (like character classes, escapes, etc.).
-func newShellFastMatcher(pattern []byte, nextField *fieldMatcher) *shellFastMatcher {
+func newShellFastMatcher(patternWithQuotes []byte, nextField *fieldMatcher) *shellFastMatcher {
 	// Pattern comes with quotes, strip them
-	if len(pattern) < 2 || pattern[0] != '"' || pattern[len(pattern)-1] != '"' {
+	if len(patternWithQuotes) < 2 || patternWithQuotes[0] != '"' || patternWithQuotes[len(patternWithQuotes)-1] != '"' {
 		return nil
 	}
-	pattern = pattern[1 : len(pattern)-1]
+	pattern := patternWithQuotes[1 : len(patternWithQuotes)-1]
 
 	if len(pattern) == 0 {
 		return nil
@@ -40,6 +41,7 @@ func newShellFastMatcher(pattern []byte, nextField *fieldMatcher) *shellFastMatc
 	}
 
 	sfm := &shellFastMatcher{
+		pattern:    patternWithQuotes, // keep original for NFA migration
 		startsWild: pattern[0] == '*',
 		endsWild:   pattern[len(pattern)-1] == '*',
 		nextField:  nextField,
