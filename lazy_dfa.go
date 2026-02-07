@@ -39,12 +39,22 @@ type lazyDFA struct {
 	cache      map[string]*lazyDFAState // key is sorted pointer addresses
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
 	disabled   bool                     // set when cache limit exceeded
+
+	// Stats for understanding cache behavior (not used in production)
+	stateCreates   int // number of states created
+	transitionHits int // cache hits on transition lookup
+	transitionMiss int // cache misses on transition lookup
 }
 
 func newLazyDFA() *lazyDFA {
 	return &lazyDFA{
 		cache: make(map[string]*lazyDFAState),
 	}
+}
+
+// stats returns cache statistics for analysis
+func (ld *lazyDFA) stats() (stateCount, stateCreates, hits, misses int) {
+	return len(ld.cache), ld.stateCreates, ld.transitionHits, ld.transitionMiss
 }
 
 // getOrCreateState returns the lazyDFAState for the given set of NFA states.
@@ -72,6 +82,7 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	state := &lazyDFAState{
 		nfaStates: nfaStates,
 	}
+	ld.stateCreates++
 
 	// Collect field transitions from all NFA states
 	seen := make(map[*fieldMatcher]bool)
@@ -94,10 +105,12 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 func (ld *lazyDFA) step(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
 	// Fast path: already cached (no lock needed for reading array element)
 	if next := state.transitions[b]; next != nil {
+		ld.transitionHits++
 		return next, true
 	}
 
 	// Slow path: compute the next state
+	ld.transitionMiss++
 	return ld.computeStep(state, b)
 }
 

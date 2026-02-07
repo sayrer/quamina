@@ -186,6 +186,23 @@ func (nb *nfaBuffers) getStartState(table *smallTable) *faState {
 	return nb.startState
 }
 
+// lazyDFAStats returns aggregated stats across all lazy DFA caches.
+// For testing/analysis only.
+func (nb *nfaBuffers) lazyDFAStats() (cacheCount, totalStates, totalCreates, totalHits, totalMisses int) {
+	if nb.lazyDFACaches == nil {
+		return 0, 0, 0, 0, 0
+	}
+	cacheCount = len(nb.lazyDFACaches)
+	for _, ld := range nb.lazyDFACaches {
+		states, creates, hits, misses := ld.stats()
+		totalStates += states
+		totalCreates += creates
+		totalHits += hits
+		totalMisses += misses
+	}
+	return
+}
+
 // nfa2Dfa does what the name says, but as of 2026/01 is not used.
 func nfa2Dfa(nfaTable *smallTable) *faState {
 	// The start state always has a trivial epsilon closure (just itself) because
