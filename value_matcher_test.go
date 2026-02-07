@@ -536,7 +536,14 @@ func TestEpsilonClosureRequired(t *testing.T) {
 	}
 
 	// Step 2: Clear all epsilon closures to simulate missing epsilonClosure call
+	// Also need to clear the lazy DFA cache to test the raw NFA path
 	fields := vm.fields()
+	// Clear the lazy DFA cache from nfaBuffers by using fresh buffers
+	bufs = &nfaBuffers{}
+	// Also clear the cache entry if it exists
+	if bufs.lazyDFACaches != nil {
+		delete(bufs.lazyDFACaches, fields.startTable)
+	}
 	clearEpsilonClosures(fields.startTable, make(map[*smallTable]bool))
 
 	// Step 3: Without closures, traverseNFA fails because it iterates over

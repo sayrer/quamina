@@ -122,6 +122,7 @@ type nfaBuffers struct {
 	startState     *faState
 	startClosure   []*faState
 	qNumBuf        [MaxBytesInEncoding]byte
+	lazyDFACaches  map[*smallTable]*lazyDFA // per-goroutine lazy DFA caches, keyed by start table
 }
 
 func newNfaBuffers() *nfaBuffers {
@@ -129,6 +130,21 @@ func newNfaBuffers() *nfaBuffers {
 		transitionsBuf: make([]*fieldMatcher, 0, 16),
 		resultBuf:      make([]X, 0, 16),
 	}
+}
+
+// getLazyDFA returns the lazy DFA cache for the given start table.
+// Creates one if it doesn't exist. No synchronization needed since
+// nfaBuffers is per-goroutine.
+func (nb *nfaBuffers) getLazyDFA(table *smallTable) *lazyDFA {
+	if nb.lazyDFACaches == nil {
+		nb.lazyDFACaches = make(map[*smallTable]*lazyDFA)
+	}
+	ld, ok := nb.lazyDFACaches[table]
+	if !ok {
+		ld = newLazyDFA()
+		nb.lazyDFACaches[table] = ld
+	}
+	return ld
 }
 
 func (nb *nfaBuffers) getBuf1() []*faState {
