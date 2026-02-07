@@ -1,5 +1,25 @@
 # Lazy DFA State Dynamics
 
+This document explains how the lazy DFA optimization works for shell-style
+and wildcard patterns in Quamina.
+
+## Quick Start
+
+Run the demo script to see the lazy DFA in action:
+
+```bash
+./scripts/lazy_dfa_demo.sh
+```
+
+## Related Files
+
+| File | Description |
+|------|-------------|
+| `lazy_dfa.go` | Core lazy DFA implementation |
+| `lazy_dfa_test.go` | Basic correctness tests |
+| `lazy_dfa_stats_test.go` | Analysis tests for state counts and hit rates |
+| `scripts/lazy_dfa_demo.sh` | Demo script showing performance |
+
 ## How States Are Created
 
 A lazy DFA state represents a **set of simultaneously active NFA states**. When matching input against a pattern like `*a*b*`:
