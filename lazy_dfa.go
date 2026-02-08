@@ -41,10 +41,12 @@ type lazyDFA struct {
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
 	disabled   bool                     // set when cache limit exceeded
 
-	// Scratch space reused across calls to avoid per-call map allocations.
+	// Scratch space reused across calls to avoid per-call allocations.
 	seenStates map[*faState]bool
 	seenFields map[*fieldMatcher]bool
 	stepResult stepOut
+	sortBuf    []*faState // reused by computeKey
+	keyBuf     []byte     // reused by computeKey
 
 	// Stats for understanding cache behavior (not used in production)
 	stateCreates   int // number of states created
@@ -74,9 +76,11 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 		return nil
 	}
 
-	key := makeStateSetKey(nfaStates)
+	keyBytes := ld.computeKey(nfaStates)
 
-	if state, exists := ld.cache[key]; exists {
+	// Lookup using []byte — the compiler optimizes string(keyBytes) in map
+	// index expressions to avoid allocation (see Go spec, composite literals).
+	if state, exists := ld.cache[string(keyBytes)]; exists {
 		return state
 	}
 
@@ -85,6 +89,9 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 		ld.disabled = true
 		return nil
 	}
+
+	// Cache miss — allocate the string key for map storage.
+	key := string(keyBytes)
 
 	// Create new state
 	state := &lazyDFAState{
@@ -156,17 +163,21 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) (*lazyDFAState, bool
 	return nextState, true
 }
 
-// makeStateSetKey creates a cache key from a set of NFA states.
-// Uses sorted pointer addresses as bytes (same approach as stateLists).
-func makeStateSetKey(states []*faState) string {
+// computeKey builds a cache key from a set of NFA states into ld.keyBuf,
+// reusing scratch buffers to avoid allocation. The returned slice is only
+// valid until the next computeKey call.
+func (ld *lazyDFA) computeKey(states []*faState) []byte {
 	if len(states) == 0 {
-		return ""
+		return ld.keyBuf[:0]
 	}
 
-	// Sort by pointer address
-	sorted := make([]*faState, len(states))
-	copy(sorted, states)
-	slices.SortFunc(sorted, func(a, b *faState) int {
+	// Reuse sortBuf for the sorted copy
+	if cap(ld.sortBuf) < len(states) {
+		ld.sortBuf = make([]*faState, len(states))
+	}
+	ld.sortBuf = ld.sortBuf[:len(states)]
+	copy(ld.sortBuf, states)
+	slices.SortFunc(ld.sortBuf, func(a, b *faState) int {
 		addrA := uintptr(unsafe.Pointer(a))
 		addrB := uintptr(unsafe.Pointer(b))
 		if addrA < addrB {
@@ -178,15 +189,25 @@ func makeStateSetKey(states []*faState) string {
 		return 0
 	})
 
-	// Convert to bytes
-	keyBytes := make([]byte, 0, len(sorted)*8)
-	for _, state := range sorted {
-		addr := uintptr(unsafe.Pointer(state))
-		for i := 0; i < 8; i++ {
-			keyBytes = append(keyBytes, byte(addr>>(i*8)))
-		}
+	// Encode sorted pointer addresses into keyBuf
+	needed := len(states) * 8
+	if cap(ld.keyBuf) < needed {
+		ld.keyBuf = make([]byte, needed)
 	}
-	return string(keyBytes)
+	ld.keyBuf = ld.keyBuf[:needed]
+	for i, state := range ld.sortBuf {
+		addr := uintptr(unsafe.Pointer(state))
+		off := i * 8
+		ld.keyBuf[off] = byte(addr)
+		ld.keyBuf[off+1] = byte(addr >> 8)
+		ld.keyBuf[off+2] = byte(addr >> 16)
+		ld.keyBuf[off+3] = byte(addr >> 24)
+		ld.keyBuf[off+4] = byte(addr >> 32)
+		ld.keyBuf[off+5] = byte(addr >> 40)
+		ld.keyBuf[off+6] = byte(addr >> 48)
+		ld.keyBuf[off+7] = byte(addr >> 56)
+	}
+	return ld.keyBuf
 }
 
 // traverseLazyDFA traverses an NFA using lazy DFA construction.
