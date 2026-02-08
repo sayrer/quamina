@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"slices"
 	"unsafe"
 )
 
@@ -159,13 +160,17 @@ func makeStateSetKey(states []*faState) string {
 	// Sort by pointer address
 	sorted := make([]*faState, len(states))
 	copy(sorted, states)
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if uintptr(unsafe.Pointer(sorted[i])) > uintptr(unsafe.Pointer(sorted[j])) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
+	slices.SortFunc(sorted, func(a, b *faState) int {
+		addrA := uintptr(unsafe.Pointer(a))
+		addrB := uintptr(unsafe.Pointer(b))
+		if addrA < addrB {
+			return -1
 		}
-	}
+		if addrA > addrB {
+			return 1
+		}
+		return 0
+	})
 
 	// Convert to bytes
 	keyBytes := make([]byte, 0, len(sorted)*8)
@@ -213,8 +218,9 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 
 		nextState, ok := ld.step(currentState, utf8Byte)
 		if !ok {
-			// Cache limit exceeded, fall back to NFA for remaining bytes
-			// Continue from current position using NFA traversal
+			// Cache limit exceeded, fall back to NFA traversal from scratch.
+			// Discard our transmap level so traverseNFA can push cleanly.
+			newTransitions.discard()
 			return traverseNFA(table, val, transitions, bufs, pp)
 		}
 		if nextState == nil {

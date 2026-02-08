@@ -103,6 +103,14 @@ func (tm *transmap) all() []*fieldMatcher {
 	return level.buf
 }
 
+// discard abandons the current transmap level, undoing a prior reset().
+// Use this when a traversal is being abandoned (e.g., fallback from lazy DFA to NFA).
+func (tm *transmap) discard() {
+	if tm.depth > 0 {
+		tm.depth--
+	}
+}
+
 // resetDepth resets the transmap to depth 0 for reuse. Call this when all
 // outstanding buffers from previous all() calls are no longer in use.
 func (tm *transmap) resetDepth() {
