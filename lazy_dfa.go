@@ -41,6 +41,11 @@ type lazyDFA struct {
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
 	disabled   bool                     // set when cache limit exceeded
 
+	// Scratch space reused across calls to avoid per-call map allocations.
+	seenStates map[*faState]bool
+	seenFields map[*fieldMatcher]bool
+	stepResult stepOut
+
 	// Stats for understanding cache behavior (not used in production)
 	stateCreates   int // number of states created
 	transitionHits int // cache hits on transition lookup
@@ -49,7 +54,9 @@ type lazyDFA struct {
 
 func newLazyDFA() *lazyDFA {
 	return &lazyDFA{
-		cache: make(map[string]*lazyDFAState),
+		cache:      make(map[string]*lazyDFAState),
+		seenStates: make(map[*faState]bool),
+		seenFields: make(map[*fieldMatcher]bool),
 	}
 }
 
@@ -86,11 +93,11 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	ld.stateCreates++
 
 	// Collect field transitions from all NFA states
-	seen := make(map[*fieldMatcher]bool)
+	clear(ld.seenFields)
 	for _, nfaState := range nfaStates {
 		for _, ft := range nfaState.fieldTransitions {
-			if !seen[ft] {
-				seen[ft] = true
+			if !ld.seenFields[ft] {
+				ld.seenFields[ft] = true
 				state.fieldTransitions = append(state.fieldTransitions, ft)
 			}
 		}
@@ -118,16 +125,15 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
 func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
 	// Compute next NFA states by stepping each current NFA state on byte b
 	var nextNFAStates []*faState
-	seen := make(map[*faState]bool)
-	stepResult := &stepOut{}
+	clear(ld.seenStates)
 
 	for _, nfaState := range state.nfaStates {
-		nfaState.table.step(b, stepResult)
-		if stepResult.step != nil {
+		nfaState.table.step(b, &ld.stepResult)
+		if ld.stepResult.step != nil {
 			// Expand epsilon closure of the result
-			for _, ecState := range stepResult.step.epsilonClosure {
-				if !seen[ecState] {
-					seen[ecState] = true
+			for _, ecState := range ld.stepResult.step.epsilonClosure {
+				if !ld.seenStates[ecState] {
+					ld.seenStates[ecState] = true
 					nextNFAStates = append(nextNFAStates, ecState)
 				}
 			}
