@@ -222,7 +222,7 @@ func TestNestedTransmapSafety(t *testing.T) {
 }
 
 // TestTransmapBufferReuse directly tests that the transmap buffer reuse is safe.
-// With a buggy single-buffer implementation, nested reset/all calls corrupt the outer buffer.
+// With a buggy single-buffer implementation, nested push/pop calls corrupt the outer buffer.
 func TestTransmapBufferReuse(t *testing.T) {
 	// Create dummy fieldMatchers for testing
 	fm1 := &fieldMatcher{}
@@ -231,15 +231,15 @@ func TestTransmapBufferReuse(t *testing.T) {
 
 	tm := newTransMap()
 
-	// Simulate start of matchesForFields - reset depth
+	// Simulate start of matchesForFields
 	tm.resetDepth()
 
 	// Simulate outer traverseNFA call
-	tm.reset()
+	tm.push()
 	tm.add([]*fieldMatcher{fm1, fm2})
 
-	// Get outer result - this returns a buffer
-	outerResult := tm.all()
+	// Get outer result - this returns a buffer backed by level 0
+	outerResult := tm.pop()
 
 	// Verify outer result before inner call
 	if len(outerResult) != 2 {
@@ -253,24 +253,18 @@ func TestTransmapBufferReuse(t *testing.T) {
 		t.Fatalf("outer result should have fm1 and fm2")
 	}
 
-	// Simulate inner traverseNFA call (would happen during iteration in tryToMatch)
-	tm.reset()
+	// Simulate inner traverseNFA call (would happen during iteration in tryToMatch).
+	// push() goes to level 1, so level 0's buffer (outerResult) is safe.
+	tm.push()
 	tm.add([]*fieldMatcher{fm3})
-	innerResult := tm.all()
+	innerResult := tm.pop()
 
 	// Inner should have fm3
 	if len(innerResult) != 1 || innerResult[0] != fm3 {
 		t.Errorf("inner result: got %v, want [fm3]", innerResult)
 	}
 
-	// THIS IS THE BUG CHECK: With single-buffer impl, outerResult would be corrupted.
-	// The inner reset/all would overwrite the same buffer that outerResult points to.
-	// With stack-based impl, they use different buffers at different depths.
-	//
-	// After inner call, check outerResult DIRECTLY (not a copy).
-	// With buggy impl: outerResult[0] is now fm3 (corrupted!)
-	// With stack impl: outerResult still has fm1, fm2
-
+	// Verify outerResult wasn't corrupted by the inner push/pop.
 	foundFM1 := false
 	foundFM2 := false
 	for _, fm := range outerResult {

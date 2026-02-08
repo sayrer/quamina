@@ -203,7 +203,7 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 
 	// Collect transitions using the transmap
 	newTransitions := bufs.getTransmap()
-	newTransitions.reset()
+	newTransitions.push()
 	newTransitions.add(transitions)
 	newTransitions.add(currentState.fieldTransitions)
 
@@ -231,5 +231,5 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		currentState = nextState
 	}
 
-	return newTransitions.all()
+	return newTransitions.pop()
 }
