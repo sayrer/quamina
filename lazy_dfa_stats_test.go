@@ -443,12 +443,6 @@ func TestLazyDFAMultipleOverlapping(t *testing.T) {
 		states, hitRate, states*2096/1024)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // TestLazyDFATryToExplode tries hard to hit the state limit
 func TestLazyDFATryToExplode(t *testing.T) {
