@@ -437,7 +437,16 @@ func traverseDFA(table *smallTable, val []byte, transitions []*fieldMatcher) []*
 		if next == nil {
 			break
 		}
-		transitions = append(transitions, next.fieldTransitions...)
+		switch len(next.fieldTransitions) {
+		case 0:
+			// no-op
+		case 1:
+			transitions = append(transitions, next.fieldTransitions[0])
+		case 2:
+			transitions = append(transitions, next.fieldTransitions[0], next.fieldTransitions[1])
+		default:
+			transitions = append(transitions, next.fieldTransitions...)
+		}
 		table = next.table
 	}
 	return transitions
