@@ -359,7 +359,16 @@ func nfa2Dfa(nfaTable *smallTable) *faState {
 	startState := &faState{table: nfaTable}
 	startState.epsilonClosure = []*faState{startState}
 	startNfa := []*faState{startState}
-	return n2dNode(startNfa, newStateLists())
+	return n2dNode(startNfa, newStateLists(int(^uint(0)>>1)))
+}
+
+// nfa2DfaWithBudget is like nfa2Dfa but limits the number of DFA states created.
+// If the budget is exceeded, it returns nil.
+func nfa2DfaWithBudget(nfaTable *smallTable, budget int) *faState {
+	startState := &faState{table: nfaTable}
+	startState.epsilonClosure = []*faState{startState}
+	startNfa := []*faState{startState}
+	return n2dNode(startNfa, newStateLists(budget))
 }
 
 // n2dNode input is a list of NFA states, which are all the states that are either the
@@ -378,6 +387,9 @@ func n2dNode(rawNStates []*faState, sList *stateLists) *faState {
 	// as a set, may be equal to a previous set of states, in which case the
 	// corresponding DFA will have already been constructed.
 	ingredients, dfaState, alreadyExists := sList.intern(nStates)
+	if sList.overBudget {
+		return nil
+	}
 	if alreadyExists {
 		return dfaState
 	}
@@ -407,7 +419,11 @@ func n2dNode(rawNStates []*faState, sList *stateLists) *faState {
 		// if there were any transitions on this byte value
 		if len(rawStates) > 0 {
 			// recurse, get the DFA state for the transitions and plug it into this state
-			dfaState.table.addByteStep(byte(utf8byte), n2dNode(rawStates, sList))
+			child := n2dNode(rawStates, sList)
+			if child == nil {
+				return nil
+			}
+			dfaState.table.addByteStep(byte(utf8byte), child)
 		}
 	}
 

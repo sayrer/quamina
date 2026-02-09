@@ -10,14 +10,17 @@ import (
 // will be slices of states. There will be duplicate slices and we want to deduplicate. There's
 // probably a more idiomatic and efficient way to do this.
 type stateLists struct {
-	lists     map[string][]*faState
-	dfaStates map[string]*faState
+	lists      map[string][]*faState
+	dfaStates  map[string]*faState
+	budget     int
+	overBudget bool
 }
 
-func newStateLists() *stateLists {
+func newStateLists(budget int) *stateLists {
 	return &stateLists{
 		lists:     make(map[string][]*faState),
 		dfaStates: make(map[string]*faState),
+		budget:    budget,
 	}
 }
 
@@ -58,6 +61,11 @@ func (sl *stateLists) intern(list []*faState) ([]*faState, *faState, bool) {
 	list, exists := sl.lists[key]
 	if exists {
 		return list, sl.dfaStates[key], true
+	}
+	sl.budget--
+	if sl.budget <= 0 {
+		sl.overBudget = true
+		return nil, nil, false
 	}
 	dfaState := &faState{table: newSmallTable()}
 	sl.lists[key] = uniques

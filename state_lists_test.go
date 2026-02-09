@@ -5,7 +5,7 @@ import "testing"
 func TestSingleState(t *testing.T) {
 	f1 := &faState{}
 	listJustOne := []*faState{f1}
-	lists := newStateLists()
+	lists := newStateLists(int(^uint(0) >> 1))
 	lj1, _, already := lists.intern(listJustOne)
 	if lj1[0] != f1 {
 		t.Error("HUH?")
@@ -25,7 +25,7 @@ func TestStateLists(t *testing.T) {
 	list135A := []*faState{f3, f5, f1}
 	list135B := []*faState{f5, f1, f3}
 
-	lists := newStateLists()
+	lists := newStateLists(int(^uint(0) >> 1))
 
 	list1, dfa1, alreadyExisted := lists.intern(list135A)
 	if dfa1 == nil {
