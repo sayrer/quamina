@@ -2,6 +2,7 @@ package quamina
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,73 @@ func BenchmarkShellstyleManyMatchers(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_, _ = q.MatchesForEvent(event)
+			}
+		})
+	}
+}
+
+// BenchmarkShellstyleManyMatchersVariedInput is like ManyMatchers but uses
+// a pool of distinct events per iteration. Each event contains the same tokens
+// in a different random order surrounded by random padding, so the DFA cache
+// sees different byte sequences and must handle cache misses realistically.
+func BenchmarkShellstyleManyMatchersVariedInput(b *testing.B) {
+	for _, count := range []int{8, 16, 32, 64, 128, 256, 512, 1024} {
+		b.Run(fmt.Sprintf("patterns=%d", count), func(b *testing.B) {
+			q, _ := New()
+
+			tokens := make([]string, count)
+			for i := range tokens {
+				tokens[i] = fmt.Sprintf("t%04x", i)
+			}
+
+			for i, tok := range tokens {
+				pattern := fmt.Sprintf(`{"val": [{"shellstyle": "*%s*"}]}`, tok)
+				if err := q.AddPattern(fmt.Sprintf("p%d", i), pattern); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			// Build a pool of events. Each shuffles the tokens into a different
+			// order and adds random padding between them, producing distinct byte
+			// sequences that all match every pattern.
+			const poolSize = 64
+			rng := rand.New(rand.NewSource(42))
+			events := make([][]byte, poolSize)
+			shuffled := make([]string, count)
+			for i := range events {
+				copy(shuffled, tokens)
+				rng.Shuffle(len(shuffled), func(a, b int) {
+					shuffled[a], shuffled[b] = shuffled[b], shuffled[a]
+				})
+				var buf strings.Builder
+				for j, tok := range shuffled {
+					if j > 0 {
+						// Random separator: 1-4 random lowercase letters
+						padLen := rng.Intn(4) + 1
+						for k := 0; k < padLen; k++ {
+							buf.WriteByte(byte('a' + rng.Intn(26)))
+						}
+					}
+					buf.WriteString(tok)
+				}
+				events[i] = []byte(fmt.Sprintf(`{"val": %q}`, buf.String()))
+			}
+
+			// Verify all events match all patterns.
+			for i, event := range events {
+				matches, err := q.MatchesForEvent(event)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(matches) != count {
+					b.Fatalf("event %d: expected %d matches, got %d", i, count, len(matches))
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent(events[i%poolSize])
 			}
 		})
 	}
