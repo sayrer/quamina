@@ -2,6 +2,7 @@ package quamina
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,52 @@ func BenchmarkShellstyleMultiMatch(b *testing.B) {
 				b.Fatalf("no matches for event: %s", event)
 			}
 		}
+	}
+}
+
+// BenchmarkShellstyleManyMatchers measures transmap dedup performance when
+// many patterns all match a single event, producing many field matchers per
+// traversal. This exercises the adaptive hash set that activates above
+// transmapLinearMax entries.
+func BenchmarkShellstyleManyMatchers(b *testing.B) {
+	// Each sub-benchmark uses a different number of overlapping patterns.
+	// At counts above transmapLinearMax (16), the hash set path is used.
+	for _, count := range []int{8, 16, 32, 64, 128, 256, 512, 1024} {
+		b.Run(fmt.Sprintf("patterns=%d", count), func(b *testing.B) {
+			q, _ := New()
+
+			// Build an event value that contains all the substrings we'll pattern on.
+			// Use distinct 3-char tokens so patterns don't accidentally match each other.
+			tokens := make([]string, count)
+			for i := range tokens {
+				tokens[i] = fmt.Sprintf("t%04x", i)
+			}
+			value := strings.Join(tokens, "-")
+			event := []byte(fmt.Sprintf(`{"val": %q}`, value))
+
+			// Add count patterns, each matching a different substring in the value.
+			// Every pattern matches the event, so the transmap collects count field matchers.
+			for i, tok := range tokens {
+				pattern := fmt.Sprintf(`{"val": [{"shellstyle": "*%s*"}]}`, tok)
+				if err := q.AddPattern(fmt.Sprintf("p%d", i), pattern); err != nil {
+					b.Fatal(err)
+				}
+			}
+
+			// Verify all patterns match.
+			matches, err := q.MatchesForEvent(event)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(matches) != count {
+				b.Fatalf("expected %d matches, got %d", count, len(matches))
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent(event)
+			}
+		})
 	}
 }
