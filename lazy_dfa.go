@@ -30,6 +30,11 @@ type lazyDFAState struct {
 	// nfaStates are the underlying NFA states (after epsilon closure).
 	// Used to compute transitions on cache miss.
 	nfaStates []*faState
+
+	// cached is true if this state lives in the lazyDFA cache.
+	// Temporary (uncached) states skip cache lookups on transitions
+	// to avoid expensive key computation that almost always misses.
+	cached bool
 }
 
 // maxLazyDFAStates is the maximum number of cached DFA states.
@@ -42,7 +47,6 @@ const maxLazyDFAStates = 3400
 type lazyDFA struct {
 	cache      map[string]*lazyDFAState // key is sorted pointer addresses
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
-	disabled   bool                     // set when cache limit exceeded
 
 	// Scratch space reused across calls to avoid per-call allocations.
 	seenStates map[*faState]bool
@@ -70,39 +74,11 @@ func (ld *lazyDFA) stats() (stateCount, stateCreates, hits, misses int) {
 	return len(ld.cache), ld.stateCreates, ld.transitionHits, ld.transitionMiss
 }
 
-// getOrCreateState returns the lazyDFAState for the given set of NFA states.
-// Creates a new state if one doesn't exist.
-// Returns nil if the cache is disabled (limit exceeded).
-// No synchronization needed - this is called from per-goroutine nfaBuffers.
-func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
-	if ld.disabled {
-		return nil
-	}
-
-	keyBytes := ld.computeKey(nfaStates)
-
-	// Lookup using []byte — the compiler optimizes string(keyBytes) in map
-	// index expressions to avoid allocation (see Go spec, composite literals).
-	if state, exists := ld.cache[string(keyBytes)]; exists {
-		return state
-	}
-
-	// Check cache limit
-	if len(ld.cache) >= maxLazyDFAStates {
-		ld.disabled = true
-		return nil
-	}
-
-	// Cache miss — allocate the string key for map storage.
-	key := string(keyBytes)
-
-	// Create new state
-	state := &lazyDFAState{
-		nfaStates: nfaStates,
-	}
+// makeState creates a lazyDFAState for the given NFA states and collects
+// their field transitions. The state is not added to the cache.
+func (ld *lazyDFA) makeState(nfaStates []*faState) *lazyDFAState {
+	state := &lazyDFAState{nfaStates: nfaStates}
 	ld.stateCreates++
-
-	// Collect field transitions from all NFA states
 	clear(ld.seenFields)
 	for _, nfaState := range nfaStates {
 		for _, ft := range nfaState.fieldTransitions {
@@ -112,19 +88,43 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 			}
 		}
 	}
+	return state
+}
 
+// getOrCreateState returns the lazyDFAState for the given set of NFA states.
+// Creates and caches a new state if one doesn't exist and the cache isn't full.
+// Returns nil if the cache is full (caller creates a temporary uncached state).
+// No synchronization needed - this is called from per-goroutine nfaBuffers.
+func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
+	keyBytes := ld.computeKey(nfaStates)
+
+	// Lookup using []byte — the compiler optimizes string(keyBytes) in map
+	// index expressions to avoid allocation (see Go spec, composite literals).
+	if state, exists := ld.cache[string(keyBytes)]; exists {
+		return state
+	}
+
+	// Cache full — return nil so caller creates a temporary state
+	if len(ld.cache) >= maxLazyDFAStates {
+		return nil
+	}
+
+	// Cache miss — allocate the string key for map storage.
+	key := string(keyBytes)
+	state := ld.makeState(nfaStates)
+	state.cached = true
 	ld.cache[key] = state
 	return state
 }
 
 // step returns the next lazyDFAState for the given byte.
 // Computes and caches the result if not already cached.
-// Returns (nextState, true) on success, (nil, false) if cache limit exceeded.
-func (ld *lazyDFA) step(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
+// Returns nil if no transition exists for the byte.
+func (ld *lazyDFA) step(state *lazyDFAState, b byte) *lazyDFAState {
 	// Fast path: already cached (bytes.IndexByte is a SIMD intrinsic on amd64/arm64)
 	if idx := bytes.IndexByte(state.transKeys, b); idx >= 0 {
 		ld.transitionHits++
-		return state.transValues[idx], true
+		return state.transValues[idx]
 	}
 
 	// Slow path: compute the next state
@@ -132,7 +132,7 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
 	return ld.computeStep(state, b)
 }
 
-func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
+func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 	// Compute next NFA states by stepping each current NFA state on byte b
 	var nextNFAStates []*faState
 	clear(ld.seenStates)
@@ -151,20 +151,22 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) (*lazyDFAState, bool
 	}
 
 	if len(nextNFAStates) == 0 {
-		return nil, true // no next state, but cache is OK
+		return nil
 	}
 
-	// Get or create the lazyDFAState for the next NFA state set
-	nextState := ld.getOrCreateState(nextNFAStates)
-	if nextState == nil {
-		return nil, false // cache limit exceeded
+	// Only consult the cache when stepping from a cached state.
+	// Temporary states arise when the cache is full; further lookups
+	// would almost always miss and waste time computing keys.
+	if state.cached {
+		nextState := ld.getOrCreateState(nextNFAStates)
+		if nextState != nil {
+			state.transKeys = append(state.transKeys, b)
+			state.transValues = append(state.transValues, nextState)
+			return nextState
+		}
 	}
 
-	// Cache the transition
-	state.transKeys = append(state.transKeys, b)
-	state.transValues = append(state.transValues, nextState)
-
-	return nextState, true
+	return ld.makeState(nextNFAStates)
 }
 
 // computeKey builds a cache key from a set of NFA states into ld.keyBuf,
@@ -217,7 +219,8 @@ func (ld *lazyDFA) computeKey(states []*faState) []byte {
 // traverseLazyDFA traverses an NFA using lazy DFA construction.
 // On first traversal of a path, it builds and caches DFA states.
 // On subsequent traversals, it uses the cached states for near-DFA speed.
-// Falls back to NFA traversal if the cache limit is exceeded.
+// When the cache is full, temporary uncached states are used for cache misses,
+// snapping back to the fast path whenever a cached state is hit.
 func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers, pp printer) []*fieldMatcher {
 	// Get or create the start state (cached for hot path)
 	currentState := ld.startState
@@ -226,10 +229,11 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		startStates := startNFA.epsilonClosure
 		currentState = ld.getOrCreateState(startStates)
 		if currentState == nil {
-			// Cache limit exceeded, fall back to NFA
-			return traverseNFA(table, val, transitions, bufs, pp)
+			// Cache full at start — create temporary start state
+			currentState = ld.makeState(startStates)
+		} else {
+			ld.startState = currentState // cache for next time
 		}
-		ld.startState = currentState // cache for next time
 	}
 
 	// Collect transitions using the transmap
@@ -247,13 +251,7 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 			utf8Byte = valueTerminator
 		}
 
-		nextState, ok := ld.step(currentState, utf8Byte)
-		if !ok {
-			// Cache limit exceeded, fall back to NFA traversal from scratch.
-			// Discard our transmap level so traverseNFA can push cleanly.
-			newTransitions.discard()
-			return traverseNFA(table, val, transitions, bufs, pp)
-		}
+		nextState := ld.step(currentState, utf8Byte)
 		if nextState == nil {
 			break
 		}
