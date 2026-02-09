@@ -44,12 +44,20 @@ huge numbers of states and splices. So, we want to optimize merging.
 
 */
 
+// transmapLinearMax is the threshold at which transmapLevel switches from
+// linear scan to an open-addressing hash set for dedup. Below this size,
+// linear scan is faster due to cache locality and no hash overhead.
+const transmapLinearMax = 16
+
 // transmapLevel is one level in the transmap stack. It stores a deduplicated
-// set of field matchers as a plain slice. Linear scan for dedup is faster than
-// a map for the typical number of field matchers (< ~50) because it avoids
-// hash computation, bucket lookup, and randomized iteration overhead.
+// set of field matchers. For small sets (<=transmapLinearMax), dedup uses a
+// linear scan of buf. For larger sets, an open-addressing hash table (slots)
+// with linear probing is used, giving O(1) amortized lookup without the
+// overhead of Go's built-in map.
 type transmapLevel struct {
-	buf []*fieldMatcher
+	buf   []*fieldMatcher
+	slots []*fieldMatcher // power-of-2 hash table, nil = empty slot
+	mask  uintptr         // len(slots) - 1, for fast modular indexing
 }
 
 // transmap is a Set structure used to gather transitions as we work our way
@@ -80,27 +88,144 @@ func (tm *transmap) push() {
 	tm.depth++
 	for tm.depth >= len(tm.levels) {
 		tm.levels = append(tm.levels, transmapLevel{
-			buf: make([]*fieldMatcher, 0, 16),
+			buf: make([]*fieldMatcher, 0, transmapLinearMax),
 		})
 	}
-	tm.levels[tm.depth].buf = tm.levels[tm.depth].buf[:0]
+	level := &tm.levels[tm.depth]
+	level.buf = level.buf[:0]
+	// Clear hash table if it was activated on a previous use of this level.
+	if level.slots != nil {
+		clear(level.slots)
+	}
 }
 
 // add inserts field matchers into the current level's set, deduplicating
-// by pointer identity via linear scan.
+// by pointer identity. Uses linear scan for small sets and switches to an
+// open-addressing hash set for larger ones.
 func (tm *transmap) add(fms []*fieldMatcher) {
 	level := &tm.levels[tm.depth]
 	for _, fm := range fms {
-		found := false
-		for _, existing := range level.buf {
-			if existing == fm {
-				found = true
-				break
+		if level.slots != nil {
+			// Hash set mode: probe for existing entry or empty slot.
+			level.hashAdd(fm)
+		} else if len(level.buf) < transmapLinearMax {
+			// Linear scan mode: small set.
+			found := false
+			for _, existing := range level.buf {
+				if existing == fm {
+					found = true
+					break
+				}
 			}
+			if !found {
+				level.buf = append(level.buf, fm)
+			}
+		} else {
+			// Transition: promote to hash set mode.
+			level.promoteToHash()
+			level.hashAdd(fm)
 		}
-		if !found {
+	}
+}
+
+// transmapHash computes a hash for a pointer using a fibonacci hash.
+// This distributes pointer addresses (which are typically aligned and
+// clustered) uniformly across the hash table.
+func transmapHash(p *fieldMatcher) uintptr {
+	// Fibonacci hashing: multiply by the golden ratio constant and use
+	// the high bits. This works well for pointers which differ in low bits.
+	const phi64 = 0x9E3779B97F4A7C15 // 2^64 / golden ratio
+	return uintptr(uint64(uintptr(unsafe.Pointer(p))) * phi64)
+}
+
+// promoteToHash switches this level from linear scan to hash set mode.
+// It allocates (or reuses) the slots array and rehashes all existing entries.
+func (level *transmapLevel) promoteToHash() {
+	// Start with 4x the current size for ~25% load factor after insert.
+	newSize := uintptr(len(level.buf)) * 4
+	// Round up to next power of 2.
+	newSize--
+	newSize |= newSize >> 1
+	newSize |= newSize >> 2
+	newSize |= newSize >> 4
+	newSize |= newSize >> 8
+	newSize |= newSize >> 16
+	newSize |= newSize >> 32
+	newSize++
+	if newSize < 64 {
+		newSize = 64
+	}
+
+	if uintptr(cap(level.slots)) >= newSize {
+		level.slots = level.slots[:newSize]
+		clear(level.slots)
+	} else {
+		level.slots = make([]*fieldMatcher, newSize)
+	}
+	level.mask = newSize - 1
+
+	// Rehash existing entries.
+	for _, fm := range level.buf {
+		idx := transmapHash(fm) & level.mask
+		for level.slots[idx] != nil {
+			idx = (idx + 1) & level.mask
+		}
+		level.slots[idx] = fm
+	}
+}
+
+// loadLimit returns the maximum number of entries before the hash table
+// should grow. Small tables use a 50% load factor for short probe sequences.
+// Larger tables tolerate 75% load to avoid aggressive memory growth — linear
+// probing still performs well at that density (average probe length ~2).
+func (level *transmapLevel) loadLimit() uintptr {
+	size := level.mask + 1
+	if size <= 256 {
+		return size / 2 // 50%
+	}
+	return size * 3 / 4 // 75%
+}
+
+// hashAdd inserts fm into the hash set if not already present, and appends
+// to buf for ordered output.
+func (level *transmapLevel) hashAdd(fm *fieldMatcher) {
+	idx := transmapHash(fm) & level.mask
+	for {
+		existing := level.slots[idx]
+		if existing == nil {
+			// Not found: insert.
+			level.slots[idx] = fm
 			level.buf = append(level.buf, fm)
+			if uintptr(len(level.buf)) > level.loadLimit() {
+				level.growHash()
+			}
+			return
 		}
+		if existing == fm {
+			// Already present.
+			return
+		}
+		idx = (idx + 1) & level.mask
+	}
+}
+
+// growHash doubles the hash table and rehashes all entries.
+func (level *transmapLevel) growHash() {
+	newSize := (level.mask + 1) * 2
+	if uintptr(cap(level.slots)) >= newSize {
+		level.slots = level.slots[:newSize]
+		clear(level.slots)
+	} else {
+		level.slots = make([]*fieldMatcher, newSize)
+	}
+	level.mask = newSize - 1
+
+	for _, fm := range level.buf {
+		idx := transmapHash(fm) & level.mask
+		for level.slots[idx] != nil {
+			idx = (idx + 1) & level.mask
+		}
+		level.slots[idx] = fm
 	}
 }
 

@@ -280,3 +280,43 @@ func TestTransmapBufferReuse(t *testing.T) {
 		t.Errorf("outer result was corrupted after inner call: expected fm1 and fm2, got %v", outerResult)
 	}
 }
+
+// TestTransmapHashPromotion exercises the adaptive hash set that activates
+// when a transmap level exceeds transmapLinearMax entries.
+func TestTransmapHashPromotion(t *testing.T) {
+	tm := newTransMap()
+	tm.resetDepth()
+	tm.push()
+
+	// Create more field matchers than the linear threshold.
+	n := transmapLinearMax * 4
+	fms := make([]*fieldMatcher, n)
+	for i := range fms {
+		fms[i] = &fieldMatcher{}
+	}
+
+	// Add all field matchers.
+	tm.add(fms)
+
+	// Add them all again — should be deduplicated.
+	tm.add(fms)
+
+	result := tm.pop()
+	if len(result) != n {
+		t.Fatalf("expected %d unique field matchers, got %d", n, len(result))
+	}
+
+	// Verify all original matchers are present.
+	seen := make(map[*fieldMatcher]bool)
+	for _, fm := range result {
+		if seen[fm] {
+			t.Errorf("duplicate field matcher in result")
+		}
+		seen[fm] = true
+	}
+	for i, fm := range fms {
+		if !seen[fm] {
+			t.Errorf("field matcher %d missing from result", i)
+		}
+	}
+}
