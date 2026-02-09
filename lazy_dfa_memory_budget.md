@@ -13,16 +13,19 @@ Each `lazyDFAState` contains:
 
 | Component | Size (bytes) | Notes |
 |---|---|---|
-| `transitions [256]*lazyDFAState` | 2048 | Fixed. 256 pointers, mostly nil. |
-| Struct overhead (slice headers) | 48 | Two slice headers (24 bytes each) |
+| Struct overhead (slice headers) | 96 | Four slice headers (24 bytes each): transKeys, transValues, fieldTransitions, nfaStates |
+| `transKeys` backing array | `T * 1` | Variable. T = number of cached transitions. |
+| `transValues` backing array | `T * 8` | Variable. T = number of cached transitions. |
 | `nfaStates` backing array | `N * 8` | Variable. N = number of NFA states in this DFA state. |
 | `fieldTransitions` backing array | `M * 8` | Variable. M = number of field matchers. |
 | Map key (string) | `N * 8` | Stored in the `cache` map. |
 
-A typical small state (3 NFA states, 1 field transition) costs ~2,152 bytes.
-At 1000 states, total cache memory is ~2.1 MB.
+A typical state (3 NFA states, 1 field transition, 50 transitions) costs ~600
+bytes. At 1000 states, total cache memory is ~0.6 MB. With 2 MB budget, ~3,400
+states can fit — a ~3.6x improvement over the old fixed `[256]*lazyDFAState`
+array (2,048 bytes per state).
 
-But states are not uniform. A DFA state created from 200 overlapping NFA states
+States are not uniform. A DFA state created from 200 overlapping NFA states
 costs significantly more than one from 3. The fixed 1000-state limit can't
 distinguish between a cache of 1000 tiny states (well under 2 MB) and 100 huge
 states (well over 2 MB).

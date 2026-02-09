@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"bytes"
 	"slices"
 	"unsafe"
 )
@@ -17,9 +18,11 @@ import (
 
 // lazyDFAState represents a set of NFA states (a DFA state in the subset construction).
 type lazyDFAState struct {
-	// transitions maps byte values to the next lazyDFAState.
-	// nil means not yet computed for that byte.
-	transitions [256]*lazyDFAState
+	// transKeys and transValues form a sparse transition map.
+	// transKeys[i] is a byte value; transValues[i] is the corresponding next state.
+	// Lookup uses bytes.IndexByte (SIMD intrinsic on amd64/arm64).
+	transKeys   []byte
+	transValues []*lazyDFAState
 
 	// fieldTransitions are the combined field transitions from all NFA states.
 	fieldTransitions []*fieldMatcher
@@ -31,7 +34,7 @@ type lazyDFAState struct {
 
 // maxLazyDFAStates is the maximum number of cached DFA states.
 // If exceeded, we stop caching new states (existing cache still works).
-const maxLazyDFAStates = 1000
+const maxLazyDFAStates = 3400
 
 // lazyDFA is the cache for lazy DFA construction.
 // It maps sets of NFA states to their corresponding lazyDFAState.
@@ -118,10 +121,10 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 // Computes and caches the result if not already cached.
 // Returns (nextState, true) on success, (nil, false) if cache limit exceeded.
 func (ld *lazyDFA) step(state *lazyDFAState, b byte) (*lazyDFAState, bool) {
-	// Fast path: already cached (no lock needed for reading array element)
-	if next := state.transitions[b]; next != nil {
+	// Fast path: already cached (bytes.IndexByte is a SIMD intrinsic on amd64/arm64)
+	if idx := bytes.IndexByte(state.transKeys, b); idx >= 0 {
 		ld.transitionHits++
-		return next, true
+		return state.transValues[idx], true
 	}
 
 	// Slow path: compute the next state
@@ -157,8 +160,9 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) (*lazyDFAState, bool
 		return nil, false // cache limit exceeded
 	}
 
-	// Cache the transition (racy write is OK - worst case we recompute)
-	state.transitions[b] = nextState
+	// Cache the transition
+	state.transKeys = append(state.transKeys, b)
+	state.transValues = append(state.transValues, nextState)
 
 	return nextState, true
 }

@@ -82,23 +82,27 @@ func TestLazyDFAStateStats(t *testing.T) {
 // TestLazyDFAMemoryPerState estimates memory per lazy DFA state
 func TestLazyDFAMemoryPerState(t *testing.T) {
 	// lazyDFAState has:
-	// - transitions [256]*lazyDFAState = 256 * 8 = 2048 bytes
+	// - transKeys []byte = 24 bytes (slice header) + len * 1
+	// - transValues []*lazyDFAState = 24 bytes (slice header) + len * 8
 	// - fieldTransitions []*fieldMatcher = 24 bytes (slice header)
 	// - nfaStates []*faState = 24 bytes (slice header)
-	// Total: ~2096 bytes per state
+	// Struct overhead: 96 bytes (4 slice headers)
+	// Per-transition cost: 9 bytes (1 byte key + 8 byte pointer)
+	// With 50 transitions: 96 + 450 = ~546 bytes per state
 
 	stateSize := unsafe.Sizeof(lazyDFAState{})
-	t.Logf("lazyDFAState struct size: %d bytes", stateSize)
+	t.Logf("lazyDFAState struct size: %d bytes (slice headers only)", stateSize)
 
-	// The transitions array dominates
-	t.Logf("Transitions array: %d pointers * %d bytes = %d bytes",
-		256, unsafe.Sizeof((*lazyDFAState)(nil)), 256*unsafe.Sizeof((*lazyDFAState)(nil)))
+	// Per-transition cost
+	perTransition := 1 + int(unsafe.Sizeof((*lazyDFAState)(nil))) // 1 byte key + 8 byte pointer
+	t.Logf("Per-transition cost: %d bytes (1 key + %d pointer)", perTransition, unsafe.Sizeof((*lazyDFAState)(nil)))
+	t.Logf("Typical state (50 transitions): %d bytes", int(stateSize)+50*perTransition)
 
-	// With maxLazyDFAStates = 1000:
-	// Max memory = 1000 * 2096 = ~2 MB per cache
-	// Per goroutine (via Copy()), so N goroutines = N * 2 MB
-	t.Logf("Max memory per cache (1000 states): ~%d MB", 1000*int(stateSize)/(1024*1024))
-	t.Logf("Max memory per cache (100 states): ~%d KB", 100*int(stateSize)/1024)
+	// With maxLazyDFAStates = 1000, typical 50 transitions:
+	// Max memory = 1000 * ~546 = ~0.5 MB per cache
+	typicalStateSize := int(stateSize) + 50*perTransition
+	t.Logf("Max memory per cache (1000 states, 50 trans): ~%d KB", 1000*typicalStateSize/1024)
+	t.Logf("Max memory per cache (100 states, 50 trans): ~%d KB", 100*typicalStateSize/1024)
 }
 
 // TestLazyDFACacheHitRate measures cache effectiveness
@@ -174,7 +178,7 @@ func TestLazyDFAMultiplePatterns(t *testing.T) {
 	t.Logf("Multiple patterns on same field:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*2096/1024)
+	t.Logf("  Memory estimate: %d KB", states*600/1024)
 }
 
 // TestLazyDFAWorstCase tries to create pathological state explosion
@@ -206,7 +210,7 @@ func TestLazyDFAWorstCase(t *testing.T) {
 	t.Logf("Worst case pattern (*a*b*c*d*e*f*g*h*):")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*2096/1024)
+	t.Logf("  Memory estimate: %d KB", states*600/1024)
 
 	if states >= maxLazyDFAStates {
 		t.Logf("  WARNING: Hit state limit! Cache disabled.")
@@ -243,7 +247,7 @@ func TestLazyDFAManyPatterns(t *testing.T) {
 	t.Logf("50 diverse patterns:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*2096/1024)
+	t.Logf("  Memory estimate: %d KB", states*600/1024)
 }
 
 // TestLazyDFARandomInputs tests with random-ish inputs to stress state creation
@@ -278,7 +282,7 @@ func TestLazyDFARandomInputs(t *testing.T) {
 	t.Logf("10000 random-ish inputs:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*2096/1024)
+	t.Logf("  Memory estimate: %d KB", states*600/1024)
 
 	if states >= maxLazyDFAStates {
 		t.Logf("  HIT STATE LIMIT! Cache disabled, fell back to NFA")
@@ -360,7 +364,7 @@ func TestLazyDFAStateExplosion(t *testing.T) {
 		_, states, _, hits, misses := q.bufs.lazyDFAStats()
 		hitRate := float64(hits) / float64(hits+misses) * 100
 		t.Logf("After %d a's: %d states, %.1f%% hit rate, %d KB",
-			len(input), states, hitRate, states*2096/1024)
+			len(input), states, hitRate, states*600/1024)
 	}
 
 	_, finalStates, _, _, _ := q.bufs.lazyDFAStats()
@@ -440,7 +444,7 @@ func TestLazyDFAMultipleOverlapping(t *testing.T) {
 	_, states, _, hits, misses := q.bufs.lazyDFAStats()
 	hitRate := float64(hits) / float64(hits+misses) * 100
 	t.Logf("6 overlapping patterns: %d states, %.1f%% hit rate, %d KB",
-		states, hitRate, states*2096/1024)
+		states, hitRate, states*600/1024)
 }
 
 
