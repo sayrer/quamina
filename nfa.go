@@ -44,16 +44,18 @@ huge numbers of states and splices. So, we want to optimize merging.
 
 */
 
-// transmapLevel is one level in the transmap stack, with its own map and buffer.
+// transmapLevel is one level in the transmap stack. It stores a deduplicated
+// set of field matchers as a plain slice. Linear scan for dedup is faster than
+// a map for the typical number of field matchers (< ~50) because it avoids
+// hash computation, bucket lookup, and randomized iteration overhead.
 type transmapLevel struct {
-	set map[*fieldMatcher]bool
 	buf []*fieldMatcher
 }
 
 // transmap is a Set structure used to gather transitions as we work our way
 // through the automaton. It uses a stack of levels so that nested traversal
 // calls (e.g. tryToMatch iterating results while a recursive call starts a
-// new traversal) each get their own independent set and buffer.
+// new traversal) each get their own independent buffer.
 //
 // Usage: push() before a traversal, add() during, pop() to retrieve results.
 // The slice returned by pop() is backed by the level's buffer and remains
@@ -67,7 +69,6 @@ type transmap struct {
 func newTransMap() *transmap {
 	return &transmap{
 		levels: []transmapLevel{{
-			set: make(map[*fieldMatcher]bool),
 			buf: make([]*fieldMatcher, 0, 16),
 		}},
 		depth: -1,
@@ -79,19 +80,27 @@ func (tm *transmap) push() {
 	tm.depth++
 	for tm.depth >= len(tm.levels) {
 		tm.levels = append(tm.levels, transmapLevel{
-			set: make(map[*fieldMatcher]bool),
 			buf: make([]*fieldMatcher, 0, 16),
 		})
 	}
-	clear(tm.levels[tm.depth].set)
 	tm.levels[tm.depth].buf = tm.levels[tm.depth].buf[:0]
 }
 
-// add inserts field matchers into the current level's set.
+// add inserts field matchers into the current level's set, deduplicating
+// by pointer identity via linear scan.
 func (tm *transmap) add(fms []*fieldMatcher) {
-	set := tm.levels[tm.depth].set
+	level := &tm.levels[tm.depth]
 	for _, fm := range fms {
-		set[fm] = true
+		found := false
+		for _, existing := range level.buf {
+			if existing == fm {
+				found = true
+				break
+			}
+		}
+		if !found {
+			level.buf = append(level.buf, fm)
+		}
 	}
 }
 
@@ -101,13 +110,9 @@ func (tm *transmap) add(fms []*fieldMatcher) {
 // reuse immediately (since no buffer reference is returned).
 func (tm *transmap) pop() []*fieldMatcher {
 	level := &tm.levels[tm.depth]
-	if len(level.set) == 0 {
+	if len(level.buf) == 0 {
 		tm.depth--
 		return nil
-	}
-	level.buf = level.buf[:0]
-	for fm := range level.set {
-		level.buf = append(level.buf, fm)
 	}
 	// depth stays: the returned slice aliases level.buf, so this level
 	// must not be reused. Subsequent push() calls go to higher levels.
