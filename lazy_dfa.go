@@ -258,7 +258,9 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 			break
 		}
 
-		newTransitions.add(nextState.fieldTransitions)
+		if len(nextState.fieldTransitions) > 0 {
+			newTransitions.add(nextState.fieldTransitions)
+		}
 		currentState = nextState
 	}
 
