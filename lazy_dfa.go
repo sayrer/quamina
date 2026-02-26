@@ -49,7 +49,8 @@ type lazyDFA struct {
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
 
 	// Scratch space reused across calls to avoid per-call allocations.
-	seenStates map[*faState]bool
+	stepGen    uint64                 // generation counter for computeStep dedup
+	seenStates map[*faState]uint64   // maps faState to the generation it was last seen (never cleared)
 	seenFields map[*fieldMatcher]bool
 	stepResult stepOut
 	sortBuf    []*faState // reused by computeKey
@@ -74,7 +75,7 @@ type lazyDFA struct {
 func newLazyDFA() *lazyDFA {
 	return &lazyDFA{
 		cache:      make(map[string]*lazyDFAState),
-		seenStates: make(map[*faState]bool),
+		seenStates: make(map[*faState]uint64),
 		seenFields: make(map[*fieldMatcher]bool),
 	}
 }
@@ -179,15 +180,16 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 	// Use the ping-pong buffer that is NOT holding the current state's nfaStates.
 	writeIdx := 1 - ld.scratchNFAIdx
 	nextNFAStates := ld.scratchNFA[writeIdx][:0]
-	clear(ld.seenStates)
+	ld.stepGen++
+	gen := ld.stepGen
 
 	for _, nfaState := range state.nfaStates {
 		nfaState.table.step(b, &ld.stepResult)
 		if ld.stepResult.step != nil {
 			// Expand epsilon closure of the result
 			for _, ecState := range ld.stepResult.step.epsilonClosure {
-				if !ld.seenStates[ecState] {
-					ld.seenStates[ecState] = true
+				if ld.seenStates[ecState] != gen {
+					ld.seenStates[ecState] = gen
 					nextNFAStates = append(nextNFAStates, ecState)
 				}
 			}
