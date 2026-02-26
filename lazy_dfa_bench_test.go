@@ -13,7 +13,7 @@ import (
 //
 //   - Moderate number of shellstyle patterns (enough active NFA states per byte
 //     to make NFA traversal expensive, but small enough DFA state space to stay
-//     cached under maxLazyDFAStates).
+//     cached under maxLazyDFACacheBytes).
 //   - Many events over the same value space, so the cache is warm after the
 //     first pass and subsequent iterations do O(1)-per-byte SIMD lookups.
 //

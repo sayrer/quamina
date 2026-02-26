@@ -67,7 +67,7 @@ func TestLazyDFAStateStats(t *testing.T) {
 			}
 
 			// Get stats from the internal buffers
-			caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+			caches, states, creates, hits, misses, _ := q.bufs.lazyDFAStats()
 			hitRate := float64(0)
 			if hits+misses > 0 {
 				hitRate = float64(hits) / float64(hits+misses) * 100
@@ -98,8 +98,8 @@ func TestLazyDFAMemoryPerState(t *testing.T) {
 	t.Logf("Per-transition cost: %d bytes (1 key + %d pointer)", perTransition, unsafe.Sizeof((*lazyDFAState)(nil)))
 	t.Logf("Typical state (50 transitions): %d bytes", int(stateSize)+50*perTransition)
 
-	// With maxLazyDFAStates = 1000, typical 50 transitions:
-	// Max memory = 1000 * ~546 = ~0.5 MB per cache
+	// With maxLazyDFACacheBytes = 4 MB, typical 50 transitions:
+	// States cached depends on per-state memory cost
 	typicalStateSize := int(stateSize) + 50*perTransition
 	t.Logf("Max memory per cache (1000 states, 50 trans): ~%d KB", 1000*typicalStateSize/1024)
 	t.Logf("Max memory per cache (100 states, 50 trans): ~%d KB", 100*typicalStateSize/1024)
@@ -133,7 +133,7 @@ func TestLazyDFACacheHitRate(t *testing.T) {
 		}
 	}
 
-	caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+	caches, states, creates, hits, misses, _ := q.bufs.lazyDFAStats()
 	hitRate := float64(hits) / float64(hits+misses) * 100
 	t.Logf("Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
@@ -170,7 +170,7 @@ func TestLazyDFAMultiplePatterns(t *testing.T) {
 		}
 	}
 
-	caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+	caches, states, creates, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 	hitRate := float64(0)
 	if hits+misses > 0 {
 		hitRate = float64(hits) / float64(hits+misses) * 100
@@ -178,7 +178,7 @@ func TestLazyDFAMultiplePatterns(t *testing.T) {
 	t.Logf("Multiple patterns on same field:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*600/1024)
+	t.Logf("  Cache bytes: %d KB", cacheBytes/1024)
 }
 
 // TestLazyDFAWorstCase tries to create pathological state explosion
@@ -202,7 +202,7 @@ func TestLazyDFAWorstCase(t *testing.T) {
 		_, _ = q.MatchesForEvent([]byte(event))
 	}
 
-	caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+	caches, states, creates, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 	hitRate := float64(0)
 	if hits+misses > 0 {
 		hitRate = float64(hits) / float64(hits+misses) * 100
@@ -210,10 +210,10 @@ func TestLazyDFAWorstCase(t *testing.T) {
 	t.Logf("Worst case pattern (*a*b*c*d*e*f*g*h*):")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*600/1024)
+	t.Logf("  Cache bytes: %d KB", cacheBytes/1024)
 
-	if states >= maxLazyDFAStates {
-		t.Logf("  WARNING: Hit state limit! Cache disabled.")
+	if cacheBytes >= maxLazyDFACacheBytes {
+		t.Logf("  WARNING: Hit cache memory limit! Cache disabled.")
 	}
 }
 
@@ -239,7 +239,7 @@ func TestLazyDFAManyPatterns(t *testing.T) {
 		_, _ = q.MatchesForEvent([]byte(event))
 	}
 
-	caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+	caches, states, creates, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 	hitRate := float64(0)
 	if hits+misses > 0 {
 		hitRate = float64(hits) / float64(hits+misses) * 100
@@ -247,7 +247,7 @@ func TestLazyDFAManyPatterns(t *testing.T) {
 	t.Logf("50 diverse patterns:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*600/1024)
+	t.Logf("  Cache bytes: %d KB", cacheBytes/1024)
 }
 
 // TestLazyDFARandomInputs tests with random-ish inputs to stress state creation
@@ -274,7 +274,7 @@ func TestLazyDFARandomInputs(t *testing.T) {
 		_, _ = q.MatchesForEvent([]byte(event))
 	}
 
-	caches, states, creates, hits, misses := q.bufs.lazyDFAStats()
+	caches, states, creates, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 	hitRate := float64(0)
 	if hits+misses > 0 {
 		hitRate = float64(hits) / float64(hits+misses) * 100
@@ -282,10 +282,10 @@ func TestLazyDFARandomInputs(t *testing.T) {
 	t.Logf("10000 random-ish inputs:")
 	t.Logf("  Caches: %d, States: %d, Creates: %d", caches, states, creates)
 	t.Logf("  Hits: %d, Misses: %d, Hit rate: %.1f%%", hits, misses, hitRate)
-	t.Logf("  Memory estimate: %d KB", states*600/1024)
+	t.Logf("  Cache bytes: %d KB", cacheBytes/1024)
 
-	if states >= maxLazyDFAStates {
-		t.Logf("  HIT STATE LIMIT! Cache disabled, fell back to NFA")
+	if cacheBytes >= maxLazyDFACacheBytes {
+		t.Logf("  HIT CACHE MEMORY LIMIT! Cache disabled, fell back to NFA")
 	}
 }
 
@@ -306,21 +306,21 @@ func TestLazyDFAInputInfluence(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		_, _ = q.MatchesForEvent([]byte(`{"f": "aaaa"}`))
 	}
-	_, states1, _, _, _ := q.bufs.lazyDFAStats()
+	_, states1, _, _, _, _ := q.bufs.lazyDFAStats()
 	t.Logf("After 'aaaa' x100: %d states", states1)
 
 	// Test 2: Input with 'a's spread out
 	for i := 0; i < 100; i++ {
 		_, _ = q.MatchesForEvent([]byte(`{"f": "xaxaxaxa"}`))
 	}
-	_, states2, _, _, _ := q.bufs.lazyDFAStats()
+	_, states2, _, _, _, _ := q.bufs.lazyDFAStats()
 	t.Logf("After 'xaxaxaxa' x100: %d states (delta: %d)", states2, states2-states1)
 
 	// Test 3: Many 'a's - creates more state combinations
 	for i := 0; i < 100; i++ {
 		_, _ = q.MatchesForEvent([]byte(`{"f": "aaaaaaaaaaaa"}`)) // 12 a's
 	}
-	_, states3, _, _, _ := q.bufs.lazyDFAStats()
+	_, states3, _, _, _, _ := q.bufs.lazyDFAStats()
 	t.Logf("After 12 a's x100: %d states (delta: %d)", states3, states3-states2)
 
 	// Test 4: Mix of a's and other chars
@@ -328,10 +328,10 @@ func TestLazyDFAInputInfluence(t *testing.T) {
 		input := fmt.Sprintf(`{"f": "a%ca%ca%ca"}`, byte('b'+i%24), byte('b'+i%24), byte('b'+i%24))
 		_, _ = q.MatchesForEvent([]byte(input))
 	}
-	_, states4, _, _, _ := q.bufs.lazyDFAStats()
+	_, states4, _, _, _, cacheBytes := q.bufs.lazyDFAStats()
 	t.Logf("After varied inputs x100: %d states (delta: %d)", states4, states4-states3)
 
-	t.Logf("Total memory: %d KB", states4*2096/1024)
+	t.Logf("Total cache bytes: %d KB", cacheBytes/1024)
 }
 
 // TestLazyDFAStateExplosion tries to trigger actual state explosion
@@ -361,15 +361,15 @@ func TestLazyDFAStateExplosion(t *testing.T) {
 			event := fmt.Sprintf(`{"f": "%s"}`, input)
 			_, _ = q.MatchesForEvent([]byte(event))
 		}
-		_, states, _, hits, misses := q.bufs.lazyDFAStats()
+		_, states, _, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 		hitRate := float64(hits) / float64(hits+misses) * 100
 		t.Logf("After %d a's: %d states, %.1f%% hit rate, %d KB",
-			len(input), states, hitRate, states*600/1024)
+			len(input), states, hitRate, cacheBytes/1024)
 	}
 
-	_, finalStates, _, _, _ := q.bufs.lazyDFAStats()
-	if finalStates >= maxLazyDFAStates {
-		t.Logf("HIT STATE LIMIT at %d states!", finalStates)
+	_, _, _, _, _, finalCacheBytes := q.bufs.lazyDFAStats()
+	if finalCacheBytes >= maxLazyDFACacheBytes {
+		t.Logf("HIT CACHE MEMORY LIMIT at %d bytes!", finalCacheBytes)
 	}
 }
 
@@ -400,7 +400,7 @@ func TestLazyDFADifferentChars(t *testing.T) {
 	for _, input := range inputs {
 		event := fmt.Sprintf(`{"f": "%s"}`, input)
 		matches, _ := q.MatchesForEvent([]byte(event))
-		_, states, _, _, _ := q.bufs.lazyDFAStats()
+		_, states, _, _, _, _ := q.bufs.lazyDFAStats()
 		t.Logf("Input %q: %d states, matched: %v", input[:min(20, len(input))], states, len(matches) > 0)
 	}
 }
@@ -441,10 +441,10 @@ func TestLazyDFAMultipleOverlapping(t *testing.T) {
 		_, _ = matches, q // suppress unused
 	}
 
-	_, states, _, hits, misses := q.bufs.lazyDFAStats()
+	_, states, _, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 	hitRate := float64(hits) / float64(hits+misses) * 100
 	t.Logf("6 overlapping patterns: %d states, %.1f%% hit rate, %d KB",
-		states, hitRate, states*600/1024)
+		states, hitRate, cacheBytes/1024)
 }
 
 
@@ -483,17 +483,17 @@ func TestLazyDFATryToExplode(t *testing.T) {
 		_, _ = q.MatchesForEvent([]byte(event))
 
 		if i%100 == 99 {
-			_, states, _, hits, misses := q.bufs.lazyDFAStats()
+			_, states, _, hits, misses, cacheBytes := q.bufs.lazyDFAStats()
 			hitRate := float64(hits) / float64(hits+misses) * 100
-			t.Logf("After %d inputs: %d states, %.1f%% hit rate", i+1, states, hitRate)
+			t.Logf("After %d inputs: %d states, %.1f%% hit rate, %d KB", i+1, states, hitRate, cacheBytes/1024)
 
-			if states >= maxLazyDFAStates {
-				t.Logf("HIT STATE LIMIT!")
+			if cacheBytes >= maxLazyDFACacheBytes {
+				t.Logf("HIT CACHE MEMORY LIMIT!")
 				break
 			}
 		}
 	}
 
-	_, finalStates, _, _, _ := q.bufs.lazyDFAStats()
-	t.Logf("Final: %d states, %d KB", finalStates, finalStates*2096/1024)
+	_, finalStates, _, _, _, finalCacheBytes := q.bufs.lazyDFAStats()
+	t.Logf("Final: %d states, %d KB", finalStates, finalCacheBytes/1024)
 }

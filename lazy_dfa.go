@@ -37,15 +37,18 @@ type lazyDFAState struct {
 	cached bool
 }
 
-// maxLazyDFAStates is the maximum number of cached DFA states.
-// If exceeded, we stop caching new states (existing cache still works).
-const maxLazyDFAStates = 3400
+// maxLazyDFACacheBytes is the approximate memory budget per lazy DFA cache.
+// When exceeded, we stop caching new states (existing cache still works).
+// A memory budget naturally adapts: simple-pattern workloads cache more states,
+// complex-pattern workloads (with larger NFA state sets) cache fewer.
+const maxLazyDFACacheBytes = 4 << 20 // 4 MB
 
 // lazyDFA is the cache for lazy DFA construction.
 // It maps sets of NFA states to their corresponding lazyDFAState.
 // This is stored per-goroutine in nfaBuffers, so no synchronization is needed.
 type lazyDFA struct {
 	cache      map[string]*lazyDFAState // key is sorted pointer addresses
+	cacheBytes int                       // approximate bytes consumed by cached states
 	startState *lazyDFAState            // cached start state (avoids key computation on hot path)
 
 	// Scratch space reused across calls to avoid per-call allocations.
@@ -81,8 +84,8 @@ func newLazyDFA() *lazyDFA {
 }
 
 // stats returns cache statistics for analysis
-func (ld *lazyDFA) stats() (stateCount, stateCreates, hits, misses int) {
-	return len(ld.cache), ld.stateCreates, ld.transitionHits, ld.transitionMiss
+func (ld *lazyDFA) stats() (stateCount, stateCreates, hits, misses, cacheBytes int) {
+	return len(ld.cache), ld.stateCreates, ld.transitionHits, ld.transitionMiss, ld.cacheBytes
 }
 
 // makeState creates a lazyDFAState for the given NFA states and collects
@@ -149,7 +152,7 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	}
 
 	// Cache full — return nil so caller creates a temporary state
-	if len(ld.cache) >= maxLazyDFAStates {
+	if ld.cacheBytes >= maxLazyDFACacheBytes {
 		return nil
 	}
 
@@ -158,6 +161,15 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	state := ld.makeState(nfaStates)
 	state.cached = true
 	ld.cache[key] = state
+
+	// Approximate memory cost of this cached state:
+	//   map key string:              len(nfaStates) * 8
+	//   lazyDFAState struct + slices: 96 bytes
+	//   nfaStates backing array:     len(nfaStates) * 8
+	//   fieldTransitions backing:    len(fieldTransitions) * 8
+	//   Go map entry overhead:       ~64 bytes
+	ld.cacheBytes += 96 + 64 + len(nfaStates)*16 + len(state.fieldTransitions)*8
+
 	return state
 }
 
@@ -211,6 +223,7 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 		if nextState != nil {
 			state.transKeys = append(state.transKeys, b)
 			state.transValues = append(state.transValues, nextState)
+			ld.cacheBytes += 9 // 1 byte key + 8 byte pointer
 			return nextState
 		}
 	}

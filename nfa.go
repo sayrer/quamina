@@ -337,17 +337,18 @@ func (nb *nfaBuffers) getStartState(table *smallTable) *faState {
 
 // lazyDFAStats returns aggregated stats across all lazy DFA caches.
 // For testing/analysis only.
-func (nb *nfaBuffers) lazyDFAStats() (cacheCount, totalStates, totalCreates, totalHits, totalMisses int) {
+func (nb *nfaBuffers) lazyDFAStats() (cacheCount, totalStates, totalCreates, totalHits, totalMisses, totalCacheBytes int) {
 	if nb.lazyDFACaches == nil {
-		return 0, 0, 0, 0, 0
+		return 0, 0, 0, 0, 0, 0
 	}
 	cacheCount = len(nb.lazyDFACaches)
 	for _, ld := range nb.lazyDFACaches {
-		states, creates, hits, misses := ld.stats()
+		states, creates, hits, misses, cacheBytes := ld.stats()
 		totalStates += states
 		totalCreates += creates
 		totalHits += hits
 		totalMisses += misses
+		totalCacheBytes += cacheBytes
 	}
 	return
 }
