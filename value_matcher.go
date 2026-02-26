@@ -96,7 +96,7 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 						return traverseDFA(vmFields.dfaTable, qNum, transitions)
 					}
 					ld := bufs.getLazyDFA(vmFields.startTable)
-					return traverseLazyDFA(vmFields.startTable, qNum, transitions, ld, bufs, sharedNullPrinter)
+					return traverseLazyDFA(vmFields.startTable, qNum, transitions, ld, bufs)
 				} else {
 					return traverseDFA(vmFields.startTable, qNum, transitions)
 				}
@@ -109,7 +109,7 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 				return traverseDFA(vmFields.dfaTable, val, transitions)
 			}
 			ld := bufs.getLazyDFA(vmFields.startTable)
-			return traverseLazyDFA(vmFields.startTable, val, transitions, ld, bufs, sharedNullPrinter)
+			return traverseLazyDFA(vmFields.startTable, val, transitions, ld, bufs)
 		} else {
 			return traverseDFA(vmFields.startTable, val, transitions)
 		}

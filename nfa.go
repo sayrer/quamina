@@ -17,6 +17,7 @@ type faState struct {
 	fieldTransitions []*fieldMatcher
 	isSpinner        bool
 	epsilonClosure   []*faState // precomputed epsilon closure including self
+	closureSetGen    uint64     // generation for closure set visited tracking
 }
 
 /*
@@ -474,7 +475,7 @@ func traverseDFA(table *smallTable, val []byte, transitions []*fieldMatcher) []*
 // collected in the nextStates list.  The bufs structure contains three buffers, one each for
 // currentStates, nextStates, and the epsilon closure of one particular state. These are re-used
 // and should grow with use and minimize the need for memory allocation.
-func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, bufs *nfaBuffers, _ printer) []*fieldMatcher {
+func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, bufs *nfaBuffers) []*fieldMatcher {
 	currentStates := bufs.getBuf1()
 	// The start state always has a trivial epsilon closure (just itself) because
 	// all Quamina automata begin by matching the opening quote (0x22). The start
@@ -553,29 +554,27 @@ func makeFaStepKey(s1, s2 *faState) faStepKey {
 // epsilon transitions from state1 and state2. This prevents deep nesting of
 // splice states that would otherwise accumulate during repeated merges.
 func flattenEpsilonTargets(state1, state2 *faState) []*faState {
-	seen := make(map[*faState]bool, 8)
+	closureGeneration++
+	gen := closureGeneration
 	targets := make([]*faState, 0, 4)
+	targets = flattenCollect(state1, gen, targets)
+	targets = flattenCollect(state2, gen, targets)
+	return targets
+}
 
-	var collect func(s *faState)
-	collect = func(s *faState) {
-		if seen[s] {
-			return
-		}
-		seen[s] = true
-
-		if s.table.isEpsilonOnly() {
-			// This is a splice state - recurse into its epsilons
-			for _, eps := range s.table.epsilons {
-				collect(eps)
-			}
-		} else {
-			// This is a real state with byte transitions
-			targets = append(targets, s)
-		}
+func flattenCollect(s *faState, gen uint64, targets []*faState) []*faState {
+	if s.closureSetGen == gen {
+		return targets
 	}
+	s.closureSetGen = gen
 
-	collect(state1)
-	collect(state2)
+	if s.table.isEpsilonOnly() {
+		for _, eps := range s.table.epsilons {
+			targets = flattenCollect(eps, gen, targets)
+		}
+	} else {
+		targets = append(targets, s)
+	}
 	return targets
 }
 

@@ -221,7 +221,7 @@ func (ld *lazyDFA) computeKey(states []*faState) []byte {
 // On subsequent traversals, it uses the cached states for near-DFA speed.
 // When the cache is full, temporary uncached states are used for cache misses,
 // snapping back to the fast path whenever a cached state is hit.
-func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers, pp printer) []*fieldMatcher {
+func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers) []*fieldMatcher {
 	// Get or create the start state (cached for hot path)
 	currentState := ld.startState
 	if currentState == nil {
