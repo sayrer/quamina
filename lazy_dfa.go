@@ -55,6 +55,16 @@ type lazyDFA struct {
 	sortBuf    []*faState // reused by computeKey
 	keyBuf     []byte     // reused by computeKey
 
+	// Scratch state and ping-pong NFA buffers for the cache-full path.
+	// When the cache is full, we reuse scratchState instead of allocating
+	// a new lazyDFAState per byte. scratchNFA provides two buffers that
+	// alternate: one holds the current state's nfaStates while the other
+	// is used to accumulate the next step's results, avoiding aliasing.
+	scratchState  lazyDFAState   // reusable uncached state (value, not pointer)
+	scratchNFA    [2][]*faState  // ping-pong NFA state buffers
+	scratchNFAIdx int            // which buffer holds current state's nfaStates
+	scratchFT     []*fieldMatcher // reusable fieldTransitions buffer
+
 	// Stats for understanding cache behavior (not used in production)
 	stateCreates   int // number of states created
 	transitionHits int // cache hits on transition lookup
@@ -77,7 +87,10 @@ func (ld *lazyDFA) stats() (stateCount, stateCreates, hits, misses int) {
 // makeState creates a lazyDFAState for the given NFA states and collects
 // their field transitions. The state is not added to the cache.
 func (ld *lazyDFA) makeState(nfaStates []*faState) *lazyDFAState {
-	state := &lazyDFAState{nfaStates: nfaStates}
+	// Copy nfaStates since the caller may pass a scratch buffer alias.
+	copied := make([]*faState, len(nfaStates))
+	copy(copied, nfaStates)
+	state := &lazyDFAState{nfaStates: copied}
 	ld.stateCreates++
 	clear(ld.seenFields)
 	for _, nfaState := range nfaStates {
@@ -89,6 +102,36 @@ func (ld *lazyDFA) makeState(nfaStates []*faState) *lazyDFAState {
 		}
 	}
 	return state
+}
+
+// populateScratchState populates the scratch state with the given NFA states
+// (which must be in scratchNFA[writeIdx]) and flips the ping-pong index.
+// This is the zero-allocation path used when the cache is full.
+func (ld *lazyDFA) populateScratchState(nextNFAStates []*faState, writeIdx int) *lazyDFAState {
+	ld.stateCreates++
+
+	// Collect unique field transitions into scratchFT (reused slice).
+	ld.scratchFT = ld.scratchFT[:0]
+	clear(ld.seenFields)
+	for _, nfaState := range nextNFAStates {
+		for _, ft := range nfaState.fieldTransitions {
+			if !ld.seenFields[ft] {
+				ld.seenFields[ft] = true
+				ld.scratchFT = append(ld.scratchFT, ft)
+			}
+		}
+	}
+
+	// Populate the scratch state (value type, no heap allocation).
+	ld.scratchState = lazyDFAState{
+		nfaStates:        nextNFAStates,
+		fieldTransitions: ld.scratchFT,
+	}
+
+	// Flip the ping-pong index so the next step writes to the other buffer.
+	ld.scratchNFAIdx = writeIdx
+
+	return &ld.scratchState
 }
 
 // getOrCreateState returns the lazyDFAState for the given set of NFA states.
@@ -133,8 +176,9 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte) *lazyDFAState {
 }
 
 func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
-	// Compute next NFA states by stepping each current NFA state on byte b
-	var nextNFAStates []*faState
+	// Use the ping-pong buffer that is NOT holding the current state's nfaStates.
+	writeIdx := 1 - ld.scratchNFAIdx
+	nextNFAStates := ld.scratchNFA[writeIdx][:0]
 	clear(ld.seenStates)
 
 	for _, nfaState := range state.nfaStates {
@@ -149,6 +193,9 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 			}
 		}
 	}
+
+	// Save the buffer back (append may have grown it).
+	ld.scratchNFA[writeIdx] = nextNFAStates
 
 	if len(nextNFAStates) == 0 {
 		return nil
@@ -166,7 +213,7 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 		}
 	}
 
-	return ld.makeState(nextNFAStates)
+	return ld.populateScratchState(nextNFAStates, writeIdx)
 }
 
 // computeKey builds a cache key from a set of NFA states into ld.keyBuf,
@@ -229,8 +276,10 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		startStates := startNFA.epsilonClosure
 		currentState = ld.getOrCreateState(startStates)
 		if currentState == nil {
-			// Cache full at start — create temporary start state
-			currentState = ld.makeState(startStates)
+			// Cache full at start — use scratch state to avoid allocation.
+			writeIdx := 1 - ld.scratchNFAIdx
+			ld.scratchNFA[writeIdx] = append(ld.scratchNFA[writeIdx][:0], startStates...)
+			currentState = ld.populateScratchState(ld.scratchNFA[writeIdx], writeIdx)
 		} else {
 			ld.startState = currentState // cache for next time
 		}
