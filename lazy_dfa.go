@@ -41,7 +41,7 @@ type lazyDFAState struct {
 // When exceeded, we stop caching new states (existing cache still works).
 // A memory budget naturally adapts: simple-pattern workloads cache more states,
 // complex-pattern workloads (with larger NFA state sets) cache fewer.
-const maxLazyDFACacheBytes = 4 << 20 // 4 MB
+const maxLazyDFACacheBytes = 8 << 20 // 8 MB (matches RE2's default)
 
 // lazyDFA is the cache for lazy DFA construction.
 // It maps sets of NFA states to their corresponding lazyDFAState.
