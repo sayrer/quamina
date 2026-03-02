@@ -16,6 +16,23 @@ type faState struct {
 	isSpinner        bool
 	epsilonClosure   []*faState // precomputed epsilon closure including self
 	closureSetGen    uint64     // generation for closure set visited tracking
+	literal          *literalSeqInfo
+}
+
+// literalSeqInfo holds the precomputed byte sequence and endpoint for a
+// literal chain optimization. Stored behind a pointer to keep faState
+// small (8 bytes vs 32 inline) since most states don't have chains.
+type literalSeqInfo struct {
+	seq []byte   // bytes to match directly (instead of calling step())
+	end *faState // target state after matching entire seq
+}
+
+// nfaStep tracks mid-literal-sequence traversal progress. The state field
+// points to the owning state (whose literal.seq/literal.end we reference).
+// seqPos is the current position within literal.seq.
+type nfaStep struct {
+	state  *faState
+	seqPos int
 }
 
 /*
@@ -88,15 +105,16 @@ func (tm *transmap) resetDepth() {
 // the incoming event patterns and matcher structures and eventually the amount of event-matching memory
 // allocation will be reduced to nearly zero.
 type nfaBuffers struct {
-	buf1, buf2     []*faState
-	matches        *matchSet
-	transitionsBuf []*fieldMatcher
-	resultBuf      []X
-	transmap       *transmap
-	fieldSet       map[*fieldMatcher]bool
-	startState     *faState
-	startClosure   []*faState
-	qNumBuf        [MaxBytesInEncoding]byte
+	buf1, buf2         []*faState
+	litBuf1, litBuf2   []nfaStep // mid-literal sequence tracking (separate to keep buf1/buf2 tight)
+	matches            *matchSet
+	transitionsBuf     []*fieldMatcher
+	resultBuf          []X
+	transmap           *transmap
+	fieldSet           map[*fieldMatcher]bool
+	startState         *faState
+	startClosure       []*faState
+	qNumBuf            [MaxBytesInEncoding]byte
 }
 
 func newNfaBuffers() *nfaBuffers {
@@ -118,6 +136,20 @@ func (nb *nfaBuffers) getBuf2() []*faState {
 		nb.buf2 = make([]*faState, 0, 16)
 	}
 	return nb.buf2
+}
+
+func (nb *nfaBuffers) getLitBuf1() []nfaStep {
+	if nb.litBuf1 == nil {
+		nb.litBuf1 = make([]nfaStep, 0, 4)
+	}
+	return nb.litBuf1
+}
+
+func (nb *nfaBuffers) getLitBuf2() []nfaStep {
+	if nb.litBuf2 == nil {
+		nb.litBuf2 = make([]nfaStep, 0, 4)
+	}
+	return nb.litBuf2
 }
 
 func (nb *nfaBuffers) getMatches() *matchSet {
@@ -257,6 +289,12 @@ func traverseDFA(table *smallTable, val []byte, transitions []*fieldMatcher) []*
 // collected in the nextStates list.  The bufs structure contains three buffers, one each for
 // currentStates, nextStates, and the epsilon closure of one particular state. These are re-used
 // and should grow with use and minimize the need for memory allocation.
+//
+// Literal sequence optimization: when a state has literalSeq != nil, instead of processing
+// N intermediate states through the full epsilon-closure + step() path, we compare input bytes
+// directly against the precomputed byte sequence. Progress is tracked in separate litBuf buffers,
+// keeping the main []*faState buffers tight (8 bytes per element). When the sequence completes,
+// literalEnd re-enters the normal buffer for epsilon closure processing.
 func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, bufs *nfaBuffers) []*fieldMatcher {
 	currentStates := bufs.getBuf1()
 	// The start state always has a trivial epsilon closure (just itself) because
@@ -264,6 +302,10 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 	// table therefore has a single transition on `"` and never has epsilons.
 	currentStates = append(currentStates, bufs.getStartState(table))
 	nextStates := bufs.getBuf2()
+
+	// Separate buffers for mid-sequence traversal progress
+	currentLit := bufs.getLitBuf1()
+	nextLit := bufs.getLitBuf2()
 
 	// Use flat dedup set — no stacking needed since traverseNFA is not recursive
 	fieldSet := bufs.getFieldSet()
@@ -273,18 +315,47 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 	}
 
 	stepResult := &stepOut{}
-	for index := 0; len(currentStates) != 0 && index <= len(val); index++ {
+	for index := 0; (len(currentStates) != 0 || len(currentLit) != 0) && index <= len(val); index++ {
 		var utf8Byte byte
 		if index < len(val) {
 			utf8Byte = val[index]
 		} else {
 			utf8Byte = valueTerminator
 		}
+
+		// Process mid-sequence states first (direct byte comparison, no epsilon closure)
+		for _, ls := range currentLit {
+			if utf8Byte == ls.state.literal.seq[ls.seqPos] {
+				if ls.seqPos+1 < len(ls.state.literal.seq) {
+					nextLit = append(nextLit, nfaStep{state: ls.state, seqPos: ls.seqPos + 1})
+				} else {
+					// Sequence complete — literal.end re-enters normal buffer
+					nextStates = append(nextStates, ls.state.literal.end)
+				}
+			}
+			// mismatch: drop this path
+		}
+
+		// Process normal states with epsilon closure
 		for _, state := range currentStates {
 			for _, ecState := range state.epsilonClosure {
 				for _, fm := range ecState.fieldTransitions {
 					fieldSet[fm] = true
 				}
+
+				if ecState.literal != nil {
+					// Start literal sequence: compare first byte directly
+					if utf8Byte == ecState.literal.seq[0] {
+						if len(ecState.literal.seq) > 1 {
+							nextLit = append(nextLit, nfaStep{state: ecState, seqPos: 1})
+						} else {
+							nextStates = append(nextStates, ecState.literal.end)
+						}
+					}
+					continue
+				}
+
+				// Normal step
 				ecState.table.step(utf8Byte, stepResult)
 				if stepResult.step != nil {
 					nextStates = append(nextStates, stepResult.step)
@@ -296,10 +367,15 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 		swapStates := currentStates
 		currentStates = nextStates
 		nextStates = swapStates[:0]
+
+		swapLit := currentLit
+		currentLit = nextLit
+		nextLit = swapLit[:0]
 	}
 
 	// we've run out of input bytes so we need to check the current states and their
-	// epsilon closures for matches
+	// epsilon closures for matches. Mid-sequence states (in currentLit) can't have
+	// fieldTransitions — they haven't finished their sequence.
 	for _, state := range currentStates {
 		for _, ecState := range state.epsilonClosure {
 			for _, fm := range ecState.fieldTransitions {
@@ -310,6 +386,8 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 
 	bufs.buf1 = currentStates[:0]
 	bufs.buf2 = nextStates[:0]
+	bufs.litBuf1 = currentLit[:0]
+	bufs.litBuf2 = nextLit[:0]
 
 	// Materialize into current transmap buffer
 	if len(fieldSet) == 0 {

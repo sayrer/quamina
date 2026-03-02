@@ -50,11 +50,19 @@ func makeShellStyleFA(val []byte, pp printer) (start *smallTable, nextField *fie
 	pp.labelTable(start, "SHELLSTYLE")
 	nextField = newFieldMatcher()
 
+	var pendingEscape *faState
+	var seqBytes []byte
+
 	// for each byte in the pattern
 	valIndex := 0
 	for valIndex < len(val) {
 		ch := val[valIndex]
 		if ch == '*' {
+			// Finalize any pending literal sequence
+			if pendingEscape != nil && len(seqBytes) >= 2 {
+				pendingEscape.literal = &literalSeqInfo{seq: seqBytes, end: state}
+			}
+
 			spinner := state
 			spinner.isSpinner = true
 
@@ -66,17 +74,34 @@ func makeShellStyleFA(val []byte, pp printer) (start *smallTable, nextField *fie
 			pp.labelTable(spinner.table, "*-Spinner")
 			pp.labelTable(spinEscape.table, fmt.Sprintf("spinEscape on %c at %d", val[valIndex], valIndex))
 			state = spinEscape
+
+			pendingEscape = spinEscape
+			seqBytes = nil
 		} else {
 			nextStep := &faState{table: newSmallTable()}
 			pp.labelTable(nextStep.table, fmt.Sprintf("on %c at %d", val[valIndex], valIndex))
 			state.table.addByteStep(ch, nextStep)
 			state = nextStep
+			if pendingEscape != nil {
+				seqBytes = append(seqBytes, ch)
+			}
 		}
 		valIndex++
 	}
+
 	lastStep := &faState{table: newSmallTable(), fieldTransitions: []*fieldMatcher{nextField}}
 	pp.labelTable(lastStep.table, fmt.Sprintf("last step at %d", valIndex))
 	state.table.addByteStep(valueTerminator, lastStep)
+
+	// Finalize any pending literal sequence at end of val.
+	// Include the valueTerminator as the last byte in the sequence.
+	if pendingEscape != nil {
+		seqBytes = append(seqBytes, valueTerminator)
+		if len(seqBytes) >= 2 {
+			pendingEscape.literal = &literalSeqInfo{seq: seqBytes, end: lastStep}
+		}
+	}
+
 	epsilonClosure(start)
 	return
 }
