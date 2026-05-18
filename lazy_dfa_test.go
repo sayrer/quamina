@@ -32,3 +32,29 @@ func TestNfaBuffers_HasLazyDFAScratch(t *testing.T) {
 		t.Error("scratchNFA slots should start nil")
 	}
 }
+
+func TestCoreFields_GetOrInitLazyDFA(t *testing.T) {
+	// budget=0 → always returns nil
+	cf := &coreFields{state: newFieldMatcher(), segmentsTree: newSegmentsIndex()}
+	if ld := cf.getOrInitLazyDFA(); ld != nil {
+		t.Errorf("budget=0 should return nil, got %v", ld)
+	}
+
+	// budget>0 → returns non-nil, idempotent
+	cf2 := &coreFields{
+		state:         newFieldMatcher(),
+		segmentsTree:  newSegmentsIndex(),
+		lazyDFABudget: 8 << 20,
+	}
+	ld1 := cf2.getOrInitLazyDFA()
+	if ld1 == nil {
+		t.Fatal("budget>0 should return non-nil")
+	}
+	ld2 := cf2.getOrInitLazyDFA()
+	if ld1 != ld2 {
+		t.Errorf("getOrInitLazyDFA not idempotent: %p vs %p", ld1, ld2)
+	}
+	if ld1.budget != 8<<20 {
+		t.Errorf("budget = %d, want %d", ld1.budget, 8<<20)
+	}
+}

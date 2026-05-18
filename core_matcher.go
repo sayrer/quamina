@@ -44,6 +44,11 @@ type coreFields struct {
 	// matcher's retained-heap delta, monotonically tracked (it never
 	// decreases, even when HeapAlloc dips mid-build due to GC).
 	baselineAlloc uint64
+
+	// Lazy DFA cache: set lazily on first matchesForFields if budget > 0.
+	lazyDFABudget uint64
+	lazyDFA       atomic.Pointer[lazyDFA]
+	lazyDFAOnce   sync.Once
 }
 
 func newCoreMatcher() *coreMatcher {
@@ -59,6 +64,21 @@ func newCoreMatcher() *coreMatcher {
 
 func (m *coreMatcher) fields() *coreFields {
 	return m.updateable.Load()
+}
+
+// getOrInitLazyDFA returns the cache for this snapshot, creating it on
+// first call if lazyDFABudget > 0. Returns nil when caching is disabled.
+// Safe to call from multiple goroutines; sync.Once guarantees one alloc.
+func (f *coreFields) getOrInitLazyDFA() *lazyDFA {
+	if ld := f.lazyDFA.Load(); ld != nil {
+		return ld
+	}
+	f.lazyDFAOnce.Do(func() {
+		if f.lazyDFABudget > 0 {
+			f.lazyDFA.Store(newLazyDFA(f.lazyDFABudget))
+		}
+	})
+	return f.lazyDFA.Load()
 }
 
 // addPattern - the patternBytes is a JSON text which must be an object. The X is what the matcher returns to indicate
