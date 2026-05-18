@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"bytes"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -195,4 +196,38 @@ func (ld *lazyDFA) lookupOrInsert(key []byte, nfaStates []*faState, bufs *nfaBuf
 	ld.cacheBytes.Add(cost)
 	ld.stats.stateCount.Add(1)
 	return newState
+}
+
+// appendTransition publishes (b → nextState) on state. Hot-path readers
+// observe either the old transitions or the new one — never a torn write
+// — because we always atomic.Store a fresh immutable lazyTransitions.
+//
+// state.transMu serializes appends to this state's transitions, so two
+// goroutines computing different bytes on the same state can both publish
+// without a CAS retry loop. Mutex is dead after warmup.
+func appendTransition(state *lazyDFAState, b byte, nextState *lazyDFAState) {
+	state.transMu.Lock()
+	defer state.transMu.Unlock()
+
+	// cur may be nil if this is the first transition on the state.
+	cur := state.transitions.Load()
+	var curKeys []byte
+	var curValues []*lazyDFAState
+	if cur != nil {
+		if idx := bytes.IndexByte(cur.keys, b); idx >= 0 {
+			return // someone else added it; their nextState is identical
+		}
+		curKeys = cur.keys
+		curValues = cur.values
+	}
+
+	newKeys := make([]byte, 0, len(curKeys)+1)
+	newKeys = append(newKeys, curKeys...)
+	newKeys = append(newKeys, b)
+
+	newValues := make([]*lazyDFAState, 0, len(curValues)+1)
+	newValues = append(newValues, curValues...)
+	newValues = append(newValues, nextState)
+
+	state.transitions.Store(&lazyTransitions{keys: newKeys, values: newValues})
 }

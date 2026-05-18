@@ -224,3 +224,30 @@ func TestLookupOrInsert_HitMissBudget(t *testing.T) {
 		t.Error("over-budget insert should return nil")
 	}
 }
+
+func TestAppendTransition_NilCurAndIdempotent(t *testing.T) {
+	state := &lazyDFAState{cached: true}
+	next1 := &lazyDFAState{cached: true}
+
+	// First append onto nil transitions.
+	appendTransition(state, 'a', next1)
+	cur := state.transitions.Load()
+	if cur == nil || len(cur.keys) != 1 || cur.keys[0] != 'a' || cur.values[0] != next1 {
+		t.Errorf("after first append: %+v", cur)
+	}
+
+	// Second append for different byte.
+	next2 := &lazyDFAState{cached: true}
+	appendTransition(state, 'b', next2)
+	cur = state.transitions.Load()
+	if len(cur.keys) != 2 || cur.keys[1] != 'b' || cur.values[1] != next2 {
+		t.Errorf("after second append: %+v", cur)
+	}
+
+	// Double-call for same byte: no-op, no duplicate.
+	appendTransition(state, 'a', next1)
+	cur = state.transitions.Load()
+	if len(cur.keys) != 2 {
+		t.Errorf("double-call should be idempotent, got len=%d", len(cur.keys))
+	}
+}
