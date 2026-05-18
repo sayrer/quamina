@@ -404,3 +404,23 @@ func TestTraverseLazyDFA_EquivalentToNFA(t *testing.T) {
 		t.Errorf("result lengths differ: NFA=%d lazy=%d", len(nfaResult), len(lazyResult))
 	}
 }
+
+func TestLazyDFA_DisabledByDefault(t *testing.T) {
+	q, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.AddPattern("p", `{"x": [{"shellstyle": "*foo*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.MatchesForEvent([]byte(`{"x":"foobar"}`)); err != nil {
+		t.Fatal(err)
+	}
+	s := q.LazyDFAStats()
+	if s.Enabled {
+		t.Errorf("default New() should report Enabled=false, got %+v", s)
+	}
+	if s.StateCount != 0 || s.TransitionHits != 0 || s.TransitionMiss != 0 {
+		t.Errorf("disabled cache must not accumulate counters: %+v", s)
+	}
+}
