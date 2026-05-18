@@ -552,6 +552,41 @@ func TestLazyDFA_ConcurrentMatchesSameSnapshot(t *testing.T) {
 	}
 }
 
+func TestLazyDFA_MultiFieldPatternEquivalence(t *testing.T) {
+	// Regression test for a bug where ld.startState (singleton) was
+	// shared across all nondeterministic valueMatchers in a snapshot,
+	// causing the first field's start state to be reused for subsequent
+	// fields' (different) NFA tables. With multiple wildcard fields, the
+	// lazy DFA path silently produced wrong results.
+	qNFA, _ := New()
+	qLazy, _ := New(WithLazyDFACacheBytes(8 << 20))
+	pattern := `{"a":[{"shellstyle":"*foo*"}],"b":[{"shellstyle":"*bar*"}]}`
+	if err := qNFA.AddPattern("p", pattern); err != nil {
+		t.Fatal(err)
+	}
+	if err := qLazy.AddPattern("p", pattern); err != nil {
+		t.Fatal(err)
+	}
+
+	// Event matches both fields.
+	events := []string{
+		`{"a":"xfoox","b":"xbarx"}`,
+		`{"a":"foo","b":"bar"}`,
+		`{"a":"foofoo","b":"barbar"}`,
+		// Mismatch: "a" matches, "b" doesn't.
+		`{"a":"xfoox","b":"baz"}`,
+		// Neither matches.
+		`{"a":"qux","b":"qux"}`,
+	}
+	for _, ev := range events {
+		nfa, _ := qNFA.MatchesForEvent([]byte(ev))
+		lazy, _ := qLazy.MatchesForEvent([]byte(ev))
+		if !sameXSet(nfa, lazy) {
+			t.Errorf("event %q: nfa=%v lazy=%v", ev, nfa, lazy)
+		}
+	}
+}
+
 func TestLazyDFA_ConcurrentMatchesAcrossAddPattern(t *testing.T) {
 	q, _ := New(WithLazyDFACacheBytes(8 << 20))
 	if err := q.AddPattern("p0", `{"x": [{"shellstyle": "*foo*"}]}`); err != nil {

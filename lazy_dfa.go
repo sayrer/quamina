@@ -16,7 +16,6 @@ type lazyDFA struct {
 	cache      sync.Map // stateKey (string) → *lazyDFAState
 	cacheBytes atomic.Uint64
 	budget     uint64 // immutable, set at construction
-	startState atomic.Pointer[lazyDFAState]
 	insertMu   sync.Mutex // held only during cache-miss insert
 	stats      lazyDFAStats
 }
@@ -164,6 +163,41 @@ func estimateBytes(s *lazyDFAState) uint64 {
 	return uint64(stateOverhead +
 		len(s.nfaStates)*(keyByteCost+ptrSize) +
 		len(s.fieldTransitions)*ptrSize)
+}
+
+// lookupOrInsertStart is like lookupOrInsert but for the NFA table's start
+// state. It uses the *smallTable pointer as the cache key (via computeStartKey)
+// and constructs a stable, heap-allocated *faState{table: table} for the cached
+// lazyDFAState.nfaStates — never bufs.startState, which is a mutable per-goroutine
+// scratch pointer that would cause a data race if stored in the shared cache.
+func (ld *lazyDFA) lookupOrInsertStart(key []byte, table *smallTable, bufs *nfaBuffers) *lazyDFAState {
+	if existing, ok := ld.cache.Load(string(key)); ok {
+		return existing.(*lazyDFAState)
+	}
+
+	ld.insertMu.Lock()
+	defer ld.insertMu.Unlock()
+
+	if existing, ok := ld.cache.Load(string(key)); ok {
+		return existing.(*lazyDFAState)
+	}
+
+	// Build a stable start faState for this table — allocated once, then
+	// immutable, so computeStep can read .table without races.
+	stable := &faState{table: table}
+	stable.epsilonClosure = []*faState{stable}
+	nfaStates := stable.epsilonClosure
+
+	newState := makeState(nfaStates, bufs)
+	cost := estimateBytes(newState)
+	if ld.cacheBytes.Load()+cost > ld.budget {
+		return nil // caller falls back to scratch state
+	}
+	newState.cached = true
+	ld.cache.Store(string(key), newState)
+	ld.cacheBytes.Add(cost)
+	ld.stats.stateCount.Add(1)
+	return newState
 }
 
 // lookupOrInsert returns the *lazyDFAState for the given NFA state set.
@@ -331,28 +365,55 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAS
 	return ld.computeStep(state, b, bufs)
 }
 
+// computeStartKey builds a cache key for the start state of a given NFA table.
+// The start state's epsilon closure is always [synthetic_start], where
+// synthetic_start is a per-goroutine scratch *faState (nb.startState) that
+// carries the table pointer — its own address never changes across calls,
+// so we key on the *smallTable pointer instead of the faState pointer.
+// The returned slice is only valid until the next computeStartKey or
+// computeKey call on the same bufs.
+func computeStartKey(table *smallTable, bufs *nfaBuffers) []byte {
+	const needed = 8
+	if cap(bufs.lazyKeyBuf) < needed {
+		bufs.lazyKeyBuf = make([]byte, needed)
+	}
+	bufs.lazyKeyBuf = bufs.lazyKeyBuf[:needed]
+	addr := uintptr(unsafe.Pointer(table))
+	bufs.lazyKeyBuf[0] = byte(addr)
+	bufs.lazyKeyBuf[1] = byte(addr >> 8)
+	bufs.lazyKeyBuf[2] = byte(addr >> 16)
+	bufs.lazyKeyBuf[3] = byte(addr >> 24)
+	bufs.lazyKeyBuf[4] = byte(addr >> 32)
+	bufs.lazyKeyBuf[5] = byte(addr >> 40)
+	bufs.lazyKeyBuf[6] = byte(addr >> 48)
+	bufs.lazyKeyBuf[7] = byte(addr >> 56)
+	return bufs.lazyKeyBuf
+}
+
 // traverseLazyDFA mirrors traverseNFA's signature but routes through the
 // lazy DFA cache. Returns the collected fieldMatchers reachable by
 // consuming val (with a trailing valueTerminator) from table's start state.
 func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers) []*fieldMatcher {
-	// Get or compute the cached start state.
-	currentState := ld.startState.Load()
+	// Compute (or look up cached) start state for THIS table.
+	//
+	// We key on the *smallTable pointer (not bufs.startState, which is a
+	// shared synthetic *faState whose address never changes across calls).
+	//
+	// We also must NOT pass bufs.startState to lookupOrInsert/makeState: if
+	// it were stored in the cached lazyDFAState.nfaStates, another goroutine
+	// could later call getStartState(differentTable) and mutate
+	// bufs.startState.table concurrently with computeStep reading it — a
+	// data race. Instead, we allocate a stable, immutable *faState per
+	// cache-miss; the allocation is amortized because the result is cached.
+	key := computeStartKey(table, bufs)
+	currentState := ld.lookupOrInsertStart(key, table, bufs)
 	if currentState == nil {
+		// Budget too tight to even cache the start state — use scratch.
 		startNFA := bufs.getStartState(table)
 		startStates := startNFA.epsilonClosure
-		key := computeKey(startStates, bufs)
-		s := ld.lookupOrInsert(key, startStates, bufs)
-		if s == nil {
-			// Budget too tight to even cache the start state — use scratch.
-			writeIdx := 1 - bufs.lazyScratchNFAIdx
-			bufs.lazyScratchNFA[writeIdx] = append(bufs.lazyScratchNFA[writeIdx][:0], startStates...)
-			currentState = populateScratchState(bufs, writeIdx)
-		} else {
-			// First publish wins; concurrent publishers race benignly (same key
-			// → same map entry → same *lazyDFAState).
-			ld.startState.CompareAndSwap(nil, s)
-			currentState = s
-		}
+		writeIdx := 1 - bufs.lazyScratchNFAIdx
+		bufs.lazyScratchNFA[writeIdx] = append(bufs.lazyScratchNFA[writeIdx][:0], startStates...)
+		currentState = populateScratchState(bufs, writeIdx)
 	}
 
 	// Seed fieldSet with any incoming transitions.
@@ -383,7 +444,7 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		currentState = next
 	}
 
-	// Materialize into the current transmap buffer.
+	// Materialize into current transmap buffer.
 	if len(fieldSet) == 0 {
 		return nil
 	}
