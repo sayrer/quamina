@@ -92,3 +92,29 @@ func TestCoreMatcher_SetAndGetLazyDFABudget(t *testing.T) {
 		t.Errorf("before any match, counters should be zero: %+v", s)
 	}
 }
+
+func TestPublicAPI_WithLazyDFACacheBytes(t *testing.T) {
+	// Default: disabled.
+	q1, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := q1.LazyDFAStats(); s.Enabled {
+		t.Errorf("default should be disabled: %+v", s)
+	}
+
+	// Opt in.
+	q2, err := New(WithLazyDFACacheBytes(8 << 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := q2.LazyDFAStats()
+	if !s.Enabled || s.Budget != 8<<20 {
+		t.Errorf("WithLazyDFACacheBytes(8MiB): %+v", s)
+	}
+
+	// Reject absurd values.
+	if _, err := New(WithLazyDFACacheBytes(1 << 41)); err == nil {
+		t.Error("expected error for huge budget")
+	}
+}

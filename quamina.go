@@ -14,6 +14,7 @@ type Quamina struct {
 	matcher            matcher
 	mediaTypeSpecified bool
 	deletionSpecified  bool
+	lazyDFABudget      uint64
 }
 
 // Option is an interface type used in Quamina's New API to pass in options. By convention, Option names
@@ -91,6 +92,24 @@ func WithPatternStorage(ps LivePatternsState) Option {
 	}
 }
 
+// WithLazyDFACacheBytes opts the matcher into lazy DFA caching with the
+// given byte budget. budget == 0 disables (default). Larger budgets cache
+// more DFA states for hotter workloads; 8<<20 (8 MiB) matches RE2's
+// default cache ceiling and is a reasonable starting point.
+//
+// Lazy DFA accelerates match-time traversal for patterns where eager
+// NFA→DFA conversion would explode (regex, many wildcards). The cache is
+// shared across all Quamina.Copy() instances of this matcher.
+func WithLazyDFACacheBytes(budget uint64) Option {
+	return func(q *Quamina) error {
+		if budget > 1<<40 {
+			return errors.New("lazy DFA cache budget exceeds 1 TiB")
+		}
+		q.lazyDFABudget = budget
+		return nil
+	}
+}
+
 // New returns a new Quamina instance. Consult the APIs beginning with “With” for the options
 // that may be used to configure the new instance.
 func New(opts ...Option) (*Quamina, error) {
@@ -105,6 +124,9 @@ func New(opts ...Option) (*Quamina, error) {
 	}
 	if !q.deletionSpecified {
 		q.matcher = newCoreMatcher()
+	}
+	if q.lazyDFABudget > 0 {
+		q.matcher.setLazyDFABudget(q.lazyDFABudget)
 	}
 	q.bufs = newNfaBuffers()
 	return &q, nil
@@ -167,4 +189,11 @@ func (q *Quamina) SetMemoryBudget(budget uint64) (memoryUsed uint64, err error) 
 func (q *Quamina) GetMemoryBudget() (budget uint64, memoryUsed uint64) {
 	budget, memoryUsed = q.matcher.getMemoryBudget()
 	return
+}
+
+// LazyDFAStats returns a snapshot of the lazy DFA cache's behavior. Safe
+// to call concurrently with MatchesForEvent. Returns zero-value (Enabled:
+// false) if the matcher was not created with WithLazyDFACacheBytes.
+func (q *Quamina) LazyDFAStats() LazyDFAStats {
+	return q.matcher.lazyDFAStats()
 }
