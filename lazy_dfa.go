@@ -164,3 +164,35 @@ func estimateBytes(s *lazyDFAState) uint64 {
 		len(s.nfaStates)*(keyByteCost+ptrSize) +
 		len(s.fieldTransitions)*ptrSize)
 }
+
+// lookupOrInsert returns the *lazyDFAState for the given NFA state set.
+// On cache hit, returns the existing entry. On cache miss, inserts a fresh
+// state (built via makeState) and returns it. If the new state would push
+// cacheBytes past the budget, returns nil — caller falls back to scratch.
+//
+// The key bytes come from computeKey(...) and must not be mutated until
+// this call returns; the function may store a copy into the cache map.
+func (ld *lazyDFA) lookupOrInsert(key []byte, nfaStates []*faState, bufs *nfaBuffers) *lazyDFAState {
+	if existing, ok := ld.cache.Load(string(key)); ok {
+		return existing.(*lazyDFAState)
+	}
+
+	ld.insertMu.Lock()
+	defer ld.insertMu.Unlock()
+
+	// Re-check under lock — another goroutine may have inserted.
+	if existing, ok := ld.cache.Load(string(key)); ok {
+		return existing.(*lazyDFAState)
+	}
+
+	newState := makeState(nfaStates, bufs)
+	cost := estimateBytes(newState)
+	if ld.cacheBytes.Load()+cost > ld.budget {
+		return nil // caller falls back to scratch state
+	}
+	newState.cached = true
+	ld.cache.Store(string(key), newState)
+	ld.cacheBytes.Add(cost)
+	ld.stats.stateCount.Add(1)
+	return newState
+}

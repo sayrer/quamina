@@ -185,3 +185,42 @@ func TestEstimateBytes_GrowsWithStateSize(t *testing.T) {
 		t.Errorf("larger state should cost more bytes: small=%d large=%d", bs, bl)
 	}
 }
+
+func TestLookupOrInsert_HitMissBudget(t *testing.T) {
+	bufs := newNfaBuffers()
+	bufs.lazySeenFields = map[*fieldMatcher]bool{}
+	ld := newLazyDFA(8 << 20)
+
+	a, b := &faState{}, &faState{}
+	states := []*faState{a, b}
+
+	// First call: miss + insert.
+	key := computeKey(states, bufs)
+	s1 := ld.lookupOrInsert(key, states, bufs)
+	if s1 == nil {
+		t.Fatal("first call should insert and return non-nil")
+	}
+	if !s1.cached {
+		t.Error("inserted state should have cached=true")
+	}
+	if ld.stats.stateCount.Load() != 1 {
+		t.Errorf("stateCount = %d, want 1", ld.stats.stateCount.Load())
+	}
+
+	// Second call with same states: hit, same pointer.
+	key2 := computeKey(states, bufs)
+	s2 := ld.lookupOrInsert(key2, states, bufs)
+	if s2 != s1 {
+		t.Errorf("second call should return same pointer: %p vs %p", s1, s2)
+	}
+	if ld.stats.stateCount.Load() != 1 {
+		t.Errorf("stateCount should not grow on hit: %d", ld.stats.stateCount.Load())
+	}
+
+	// Tight-budget cache: next insert returns nil.
+	ldTight := newLazyDFA(1) // 1 byte budget — any insert blows it
+	keyT := computeKey(states, bufs)
+	if ldTight.lookupOrInsert(keyT, states, bufs) != nil {
+		t.Error("over-budget insert should return nil")
+	}
+}
