@@ -424,3 +424,43 @@ func TestLazyDFA_DisabledByDefault(t *testing.T) {
 		t.Errorf("disabled cache must not accumulate counters: %+v", s)
 	}
 }
+
+func TestLazyDFA_CacheLifetimeAcrossAddPattern(t *testing.T) {
+	q, _ := New(WithLazyDFACacheBytes(8 << 20))
+	if err := q.AddPattern("p1", `{"x": [{"shellstyle": "*foo*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	// Warm the cache.
+	for i := 0; i < 10; i++ {
+		if _, err := q.MatchesForEvent([]byte(`{"x":"abcfoodef"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := q.LazyDFAStats()
+	if s.StateCount == 0 {
+		t.Fatal("expected warm cache, got StateCount=0")
+	}
+	prevStateCount := s.StateCount
+
+	// AddPattern builds a fresh coreFields → cache should reset for new snapshot.
+	if err := q.AddPattern("p2", `{"x": [{"shellstyle": "*bar*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	s = q.LazyDFAStats()
+	if s.StateCount >= prevStateCount {
+		t.Errorf("expected fresh cache after AddPattern, StateCount=%d (was %d)", s.StateCount, prevStateCount)
+	}
+
+	// Match must still succeed for both patterns; no panic from stale pointers.
+	got, err := q.MatchesForEvent([]byte(`{"x":"abcfoodef"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "p1" {
+		t.Errorf("expected [p1], got %v", got)
+	}
+	got, _ = q.MatchesForEvent([]byte(`{"x":"abcbardef"}`))
+	if len(got) != 1 || got[0] != "p2" {
+		t.Errorf("expected [p2], got %v", got)
+	}
+}
