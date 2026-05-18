@@ -317,3 +317,16 @@ func populateScratchState(bufs *nfaBuffers, writeIdx int) *lazyDFAState {
 	bufs.lazyScratchNFAIdx = writeIdx
 	return &bufs.lazyScratchState
 }
+
+// step is the hot path. Returns the next *lazyDFAState for byte b.
+// Lock-free when the transition is already cached on the state.
+func (ld *lazyDFA) step(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAState {
+	trans := state.transitions.Load()
+	if trans != nil {
+		if idx := bytes.IndexByte(trans.keys, b); idx >= 0 {
+			ld.stats.hits.Add(1)
+			return trans.values[idx]
+		}
+	}
+	return ld.computeStep(state, b, bufs)
+}

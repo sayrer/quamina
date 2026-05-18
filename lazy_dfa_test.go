@@ -291,3 +291,23 @@ func TestPopulateScratchState_PingPongAndZeroAlloc(t *testing.T) {
 		t.Error("nfaStates should reference the buffer we passed in")
 	}
 }
+
+func TestStep_HotPathReturnsCachedTransition(t *testing.T) {
+	ld := newLazyDFA(8 << 20)
+	bufs := newNfaBuffers()
+
+	from := &lazyDFAState{cached: true}
+	to := &lazyDFAState{cached: true}
+	appendTransition(from, 'x', to)
+
+	got := ld.step(from, 'x', bufs)
+	if got != to {
+		t.Errorf("hot path: got %p, want %p", got, to)
+	}
+	if ld.stats.hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", ld.stats.hits.Load())
+	}
+	if ld.stats.misses.Load() != 0 {
+		t.Errorf("misses = %d, want 0", ld.stats.misses.Load())
+	}
+}
