@@ -13,11 +13,12 @@ import (
 // coreFields snapshot it hangs off, so AddPattern's CoW swap invalidates
 // the cache for free.
 type lazyDFA struct {
-	cache      sync.Map // stateKey (string) → *lazyDFAState
-	cacheBytes atomic.Uint64
-	budget     uint64 // immutable, set at construction
-	insertMu   sync.Mutex // held only during cache-miss insert
-	stats      lazyDFAStats
+	cache       sync.Map // stateKey (string) → *lazyDFAState
+	startStates sync.Map // *smallTable → *lazyDFAState (start state cache; pointer key avoids string hashing)
+	cacheBytes  atomic.Uint64
+	budget      uint64     // immutable, set at construction
+	insertMu    sync.Mutex // held only during cache-miss insert
+	stats       lazyDFAStats
 }
 
 // cacheLineBytes is the standard x86/arm64 cache line size. On Apple M-series
@@ -181,19 +182,27 @@ func estimateBytes(s *lazyDFAState) uint64 {
 }
 
 // lookupOrInsertStart is like lookupOrInsert but for the NFA table's start
-// state. It uses the *smallTable pointer as the cache key (via computeStartKey)
-// and constructs a stable, heap-allocated *faState{table: table} for the cached
-// lazyDFAState.nfaStates — never bufs.startState, which is a mutable per-goroutine
-// scratch pointer that would cause a data race if stored in the shared cache.
+// state. It uses the *smallTable pointer as the cache key for the fast path
+// (ld.startStates), skipping string hashing entirely. On a miss it falls back
+// to the full insert path and stores the new state in BOTH ld.startStates
+// (for fast future lookups) and ld.cache (for budget accounting and stats).
+//
+// The key parameter is still used to store into ld.cache so that budget
+// accounting and StateCount remain consistent with non-start states.
+//
+// The stable *faState is heap-allocated once (on first miss) and never
+// mutated, so computeStep can read .table without races.
 func (ld *lazyDFA) lookupOrInsertStart(key []byte, table *smallTable, bufs *nfaBuffers) *lazyDFAState {
-	if existing, ok := ld.cache.Load(string(key)); ok {
+	// Fast path: pointer-keyed sync.Map lookup — no string hashing.
+	if existing, ok := ld.startStates.Load(table); ok {
 		return existing.(*lazyDFAState)
 	}
 
 	ld.insertMu.Lock()
 	defer ld.insertMu.Unlock()
 
-	if existing, ok := ld.cache.Load(string(key)); ok {
+	// Re-check under lock.
+	if existing, ok := ld.startStates.Load(table); ok {
 		return existing.(*lazyDFAState)
 	}
 
@@ -209,6 +218,9 @@ func (ld *lazyDFA) lookupOrInsertStart(key []byte, table *smallTable, bufs *nfaB
 		return nil // caller falls back to scratch state
 	}
 	newState.cached = true
+	// Store in both maps: startStates for fast pointer-keyed lookup,
+	// cache for budget / stats accounting (consistent with other states).
+	ld.startStates.Store(table, newState)
 	ld.cache.Store(string(key), newState)
 	ld.cacheBytes.Add(cost)
 	ld.stats.stateCount.Add(1)
