@@ -251,3 +251,25 @@ func TestAppendTransition_NilCurAndIdempotent(t *testing.T) {
 		t.Errorf("double-call should be idempotent, got len=%d", len(cur.keys))
 	}
 }
+
+func TestPopulateScratchState_PingPongAndZeroAlloc(t *testing.T) {
+	bufs := newNfaBuffers()
+	bufs.lazySeenFields = map[*fieldMatcher]bool{}
+	a, b := &faState{}, &faState{}
+
+	// First call: writes to slot 1-bufs.lazyScratchNFAIdx.
+	bufs.lazyScratchNFA[1] = append(bufs.lazyScratchNFA[1][:0], a, b)
+	s1 := populateScratchState(bufs, 1)
+	if s1 != &bufs.lazyScratchState {
+		t.Error("should return &bufs.lazyScratchState")
+	}
+	if s1.cached {
+		t.Error("scratch state must have cached=false")
+	}
+	if bufs.lazyScratchNFAIdx != 1 {
+		t.Errorf("lazyScratchNFAIdx = %d, want 1", bufs.lazyScratchNFAIdx)
+	}
+	if len(s1.nfaStates) != 2 || s1.nfaStates[0] != a || s1.nfaStates[1] != b {
+		t.Error("nfaStates should reference the buffer we passed in")
+	}
+}

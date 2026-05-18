@@ -231,3 +231,31 @@ func appendTransition(state *lazyDFAState, b byte, nextState *lazyDFAState) {
 
 	state.transitions.Store(&lazyTransitions{keys: newKeys, values: newValues})
 }
+
+// populateScratchState fills bufs.lazyScratchState in place (no allocation)
+// with whatever NFA states are currently in bufs.lazyScratchNFA[writeIdx],
+// then flips bufs.lazyScratchNFAIdx so the next computeStep writes to the
+// other buffer. Used when the cache is full or when we're already in a
+// scratch state from a prior step.
+func populateScratchState(bufs *nfaBuffers, writeIdx int) *lazyDFAState {
+	if bufs.lazySeenFields == nil {
+		bufs.lazySeenFields = make(map[*fieldMatcher]bool)
+	}
+	clear(bufs.lazySeenFields)
+
+	nfaStates := bufs.lazyScratchNFA[writeIdx]
+	bufs.lazyScratchState = lazyDFAState{
+		nfaStates: nfaStates,
+		cached:    false,
+	}
+	for _, n := range nfaStates {
+		for _, ft := range n.fieldTransitions {
+			if !bufs.lazySeenFields[ft] {
+				bufs.lazySeenFields[ft] = true
+				bufs.lazyScratchState.fieldTransitions = append(bufs.lazyScratchState.fieldTransitions, ft)
+			}
+		}
+	}
+	bufs.lazyScratchNFAIdx = writeIdx
+	return &bufs.lazyScratchState
+}
