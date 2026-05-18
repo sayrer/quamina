@@ -20,11 +20,26 @@ type lazyDFA struct {
 	stats      lazyDFAStats
 }
 
+// cacheLineBytes is the standard x86/arm64 cache line size. On Apple M-series
+// (arm64) the physical line is 128 bytes, but the coherency granule (the unit
+// that triggers false-sharing) is 64 bytes, so 64-byte padding is sufficient
+// on all common architectures.
+const cacheLineBytes = 64
+
+// lazyDFAStats keeps each atomic counter on its own cache line to avoid
+// false sharing under concurrent matches. The hits counter is incremented
+// on every cache hit (i.e., almost every step on hot patterns); with all
+// counters sharing one cache line, parallel matchers contend on the line
+// and throughput collapses.
 type lazyDFAStats struct {
 	hits            atomic.Uint64
+	_               [cacheLineBytes - 8]byte
 	misses          atomic.Uint64
+	_               [cacheLineBytes - 8]byte
 	scratchFallback atomic.Uint64
+	_               [cacheLineBytes - 8]byte
 	stateCount      atomic.Uint64
+	_               [cacheLineBytes - 8]byte
 }
 
 // lazyDFAState is a DFA state — a set of simultaneously-active NFA states
