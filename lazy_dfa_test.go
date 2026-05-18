@@ -308,8 +308,14 @@ func TestStep_HotPathReturnsCachedTransition(t *testing.T) {
 	if got != to {
 		t.Errorf("hot path: got %p, want %p", got, to)
 	}
-	if ld.stats.hits.Load() != 1 {
-		t.Errorf("hits = %d, want 1", ld.stats.hits.Load())
+	// Hits are now accumulated in bufs.lazyLocalHits and flushed to
+	// ld.stats.hits once per traverseLazyDFA call (not per step), to
+	// avoid shared-atomic contention on the hot path.
+	if bufs.lazyLocalHits != 1 {
+		t.Errorf("lazyLocalHits = %d, want 1", bufs.lazyLocalHits)
+	}
+	if ld.stats.hits.Load() != 0 {
+		t.Errorf("hits should be 0 before flush, got %d", ld.stats.hits.Load())
 	}
 	if ld.stats.misses.Load() != 0 {
 		t.Errorf("misses = %d, want 0", ld.stats.misses.Load())

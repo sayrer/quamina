@@ -106,6 +106,7 @@ type nfaBuffers struct {
 	lazyStepGen       uint64
 	lazySeenFields    map[*fieldMatcher]bool
 	lazyDFA           *lazyDFA // transient: set per matchesForFields call
+	lazyLocalHits     uint64   // accumulated cache hits; flushed to ld.stats.hits once per traverseLazyDFA call
 }
 
 func newNfaBuffers() *nfaBuffers {

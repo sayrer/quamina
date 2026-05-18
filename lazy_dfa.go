@@ -369,11 +369,14 @@ func populateScratchState(bufs *nfaBuffers, writeIdx int) *lazyDFAState {
 
 // step is the hot path. Returns the next *lazyDFAState for byte b.
 // Lock-free when the transition is already cached on the state.
+// Cache hits are counted locally in bufs.lazyLocalHits and flushed to
+// ld.stats.hits once per traverseLazyDFA call to avoid shared-atomic
+// contention on the hot path.
 func (ld *lazyDFA) step(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAState {
 	trans := state.transitions.Load()
 	if trans != nil {
 		if idx := bytes.IndexByte(trans.keys, b); idx >= 0 {
-			ld.stats.hits.Add(1)
+			bufs.lazyLocalHits++
 			return trans.values[idx]
 		}
 	}
@@ -457,6 +460,14 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 			fieldSet[fm] = true
 		}
 		currentState = next
+	}
+
+	// Flush per-goroutine hit counter to the shared atomic once per call,
+	// instead of once per step. This reduces contention on ld.stats.hits
+	// by the average bytes-per-match factor (~10-30x).
+	if bufs.lazyLocalHits > 0 {
+		ld.stats.hits.Add(bufs.lazyLocalHits)
+		bufs.lazyLocalHits = 0
 	}
 
 	// Materialize into current transmap buffer.
