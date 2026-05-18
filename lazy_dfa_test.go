@@ -312,6 +312,58 @@ func TestStep_HotPathReturnsCachedTransition(t *testing.T) {
 	}
 }
 
+func TestQuamina_LazyDFAEquivalentMatches(t *testing.T) {
+	patterns := map[string]string{
+		"exact":  `{"x": ["foobar"]}`,
+		"star":   `{"x": [{"shellstyle": "*foo*"}]}`,
+		"prefix": `{"x": [{"shellstyle": "foo*"}]}`,
+	}
+	events := []string{
+		`{"x": "foobar"}`,
+		`{"x": "abcfoobardef"}`,
+		`{"x": "foozzz"}`,
+		`{"x": "no match here"}`,
+	}
+
+	qNFA, _ := New()
+	qLazy, _ := New(WithLazyDFACacheBytes(8 << 20))
+	for name, p := range patterns {
+		if err := qNFA.AddPattern(name, p); err != nil {
+			t.Fatal(err)
+		}
+		if err := qLazy.AddPattern(name, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, ev := range events {
+		nfaMatches, _ := qNFA.MatchesForEvent([]byte(ev))
+		lazyMatches, _ := qLazy.MatchesForEvent([]byte(ev))
+		if !sameXSet(nfaMatches, lazyMatches) {
+			t.Errorf("event %q: NFA=%v lazy=%v", ev, nfaMatches, lazyMatches)
+		}
+	}
+}
+
+func sameXSet(a, b []X) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[X]int{}
+	for _, x := range a {
+		seen[x]++
+	}
+	for _, x := range b {
+		seen[x]--
+	}
+	for _, n := range seen {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // Compares lazy-DFA traversal of a real shellstyle pattern against
 // traverseNFA. Both must return the same fieldMatcher set.
 func TestTraverseLazyDFA_EquivalentToNFA(t *testing.T) {

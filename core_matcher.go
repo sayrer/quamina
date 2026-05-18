@@ -256,6 +256,7 @@ func (m *coreMatcher) matchesForFields(fields []Field, bufs *nfaBuffers) ([]X, e
 		tm.resetDepth()
 	}
 	cmFields := m.fields()
+	bufs.lazyDFA = cmFields.getOrInitLazyDFA()
 
 	// for each of the fields, we'll try to match the automaton start state to that field - the tryToMatch
 	// routine will, in the case that there's a match, call itself to see if subsequent fields after the
