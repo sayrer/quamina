@@ -122,3 +122,27 @@ func computeKey(states []*faState, bufs *nfaBuffers) []byte {
 	}
 	return bufs.lazyKeyBuf
 }
+
+// makeState builds a fresh *lazyDFAState from the given NFA state set.
+// nfaStates is copied (caller may pass scratch). fieldTransitions are
+// deduplicated using bufs.lazySeenFields. The returned state has
+// cached=false; the caller (lookupOrInsert) sets it to true on publish.
+func makeState(nfaStates []*faState, bufs *nfaBuffers) *lazyDFAState {
+	if bufs.lazySeenFields == nil {
+		bufs.lazySeenFields = make(map[*fieldMatcher]bool)
+	}
+	copied := make([]*faState, len(nfaStates))
+	copy(copied, nfaStates)
+	state := &lazyDFAState{nfaStates: copied}
+
+	clear(bufs.lazySeenFields)
+	for _, n := range nfaStates {
+		for _, ft := range n.fieldTransitions {
+			if !bufs.lazySeenFields[ft] {
+				bufs.lazySeenFields[ft] = true
+				state.fieldTransitions = append(state.fieldTransitions, ft)
+			}
+		}
+	}
+	return state
+}

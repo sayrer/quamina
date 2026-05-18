@@ -138,3 +138,34 @@ func TestComputeKey_DeterministicAndUnique(t *testing.T) {
 		t.Errorf("key length = %d, want %d", len(k1), 3*8)
 	}
 }
+
+func TestMakeState_DedupsFieldTransitions(t *testing.T) {
+	bufs := newNfaBuffers()
+	bufs.lazySeenFields = map[*fieldMatcher]bool{}
+
+	fm1, fm2 := newFieldMatcher(), newFieldMatcher()
+	s1 := &faState{fieldTransitions: []*fieldMatcher{fm1, fm2}}
+	s2 := &faState{fieldTransitions: []*fieldMatcher{fm1}} // fm1 is duplicate
+
+	state := makeState([]*faState{s1, s2}, bufs)
+	if state == nil {
+		t.Fatal("makeState returned nil")
+	}
+	if len(state.nfaStates) != 2 {
+		t.Errorf("nfaStates len = %d, want 2", len(state.nfaStates))
+	}
+	if len(state.fieldTransitions) != 2 {
+		t.Errorf("fieldTransitions len = %d, want 2 (deduped)", len(state.fieldTransitions))
+	}
+	if state.cached {
+		t.Error("makeState should leave cached=false (caller sets)")
+	}
+
+	// nfaStates must be a copy, not aliased to caller's slice
+	input := []*faState{s1, s2}
+	state2 := makeState(input, bufs)
+	input[0] = nil
+	if state2.nfaStates[0] == nil {
+		t.Error("makeState should copy nfaStates")
+	}
+}
