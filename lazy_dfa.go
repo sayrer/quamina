@@ -388,13 +388,10 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		return nil
 	}
 	tm := bufs.getTransmap()
-	tm.push()
-	buf := tm.levels[tm.depth]
+	buf := tm.levels[tm.depth] // already [:0] from caller's push()
 	for fm := range fieldSet {
 		buf = append(buf, fm)
 	}
 	tm.levels[tm.depth] = buf
-	result := buf
-	tm.pop()
-	return result
+	return buf
 }

@@ -343,7 +343,10 @@ func TestTraverseLazyDFA_EquivalentToNFA(t *testing.T) {
 	ld := newLazyDFA(8 << 20)
 	bufs2 := newNfaBuffers()
 	transitions2 := bufs2.transitionsBuf[:0]
+	lazyTM := bufs2.getTransmap()
+	lazyTM.push()
 	lazyResult := traverseLazyDFA(vmFields.startTable, val, transitions2, ld, bufs2)
+	lazyTM.pop()
 
 	if len(nfaResult) != len(lazyResult) {
 		t.Errorf("result lengths differ: NFA=%d lazy=%d", len(nfaResult), len(lazyResult))
