@@ -252,6 +252,24 @@ func TestAppendTransition_NilCurAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestComputeStep_DeadEndReturnsNil(t *testing.T) {
+	// Build a smallTable with no transitions for 'z'.
+	tbl := newSmallTable()
+	st := &faState{table: tbl, epsilonClosure: []*faState{nil}}
+	st.epsilonClosure[0] = st
+
+	bufs := newNfaBuffers()
+	bufs.lazySeenStates = map[*faState]uint64{}
+	ld := newLazyDFA(8 << 20)
+
+	state := makeState([]*faState{st}, bufs)
+	state.cached = true
+	got := ld.computeStep(state, 'z', bufs)
+	if got != nil {
+		t.Errorf("dead-end step should return nil, got %v", got)
+	}
+}
+
 func TestPopulateScratchState_PingPongAndZeroAlloc(t *testing.T) {
 	bufs := newNfaBuffers()
 	bufs.lazySeenFields = map[*fieldMatcher]bool{}

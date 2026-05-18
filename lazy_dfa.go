@@ -232,6 +232,64 @@ func appendTransition(state *lazyDFAState, b byte, nextState *lazyDFAState) {
 	state.transitions.Store(&lazyTransitions{keys: newKeys, values: newValues})
 }
 
+// computeStep is the slow path of step(). Computes the next NFA state set
+// from state.nfaStates under byte b (expanding epsilon closure), then either:
+//   - returns nil if the step is a dead end
+//   - returns &bufs.lazyScratchState if the current state isn't cached
+//   - returns the cached *lazyDFAState (creating + appending to state.transitions
+//     if needed), or scratch state if the cache is full
+func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAState {
+	ld.stats.misses.Add(1)
+
+	// Ping-pong: write next NFA states into the slot NOT holding state.nfaStates.
+	writeIdx := 1 - bufs.lazyScratchNFAIdx
+	next := bufs.lazyScratchNFA[writeIdx][:0]
+	bufs.lazyStepGen++
+	gen := bufs.lazyStepGen
+	if bufs.lazySeenStates == nil {
+		bufs.lazySeenStates = make(map[*faState]uint64)
+	}
+
+	for _, n := range state.nfaStates {
+		if n.table == nil {
+			continue
+		}
+		nextStep := n.table.step(b)
+		if nextStep == nil {
+			continue
+		}
+		for _, ec := range nextStep.epsilonClosure {
+			if bufs.lazySeenStates[ec] != gen {
+				bufs.lazySeenStates[ec] = gen
+				next = append(next, ec)
+			}
+		}
+	}
+	bufs.lazyScratchNFA[writeIdx] = next
+
+	if len(next) == 0 {
+		return nil
+	}
+
+	// If the current state isn't cached, we're already in scratch mode —
+	// stay there. Re-using the same buffer is safe because the caller is
+	// about to overwrite currentState with our return value.
+	if !state.cached {
+		return populateScratchState(bufs, writeIdx)
+	}
+
+	key := computeKey(next, bufs)
+	nextState := ld.lookupOrInsert(key, next, bufs)
+	if nextState == nil {
+		// Cache full — fall back to scratch for this step.
+		ld.stats.scratchFallback.Add(1)
+		return populateScratchState(bufs, writeIdx)
+	}
+
+	appendTransition(state, b, nextState)
+	return nextState
+}
+
 // populateScratchState fills bufs.lazyScratchState in place (no allocation)
 // with whatever NFA states are currently in bufs.lazyScratchNFA[writeIdx],
 // then flips bufs.lazyScratchNFAIdx so the next computeStep writes to the
