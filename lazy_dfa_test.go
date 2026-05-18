@@ -17,3 +17,18 @@ func TestLazyDFA_NewSetsBudget(t *testing.T) {
 		t.Errorf("stateCount = %d, want 0", ld.stats.stateCount.Load())
 	}
 }
+
+func TestNfaBuffers_HasLazyDFAScratch(t *testing.T) {
+	nb := newNfaBuffers()
+	// All scratch fields should be zero-valued and usable.
+	nb.lazyKeyBuf = nb.lazyKeyBuf[:0]
+	nb.lazySortBuf = nb.lazySortBuf[:0]
+	nb.lazySeenStates = map[*faState]uint64{}
+	nb.lazyStepGen = 0
+	nb.lazyScratchNFAIdx = 0
+	nb.lazySeenFields = map[*fieldMatcher]bool{}
+	nb.lazyDFA = nil
+	if nb.lazyScratchNFA[0] != nil || nb.lazyScratchNFA[1] != nil {
+		t.Error("scratchNFA slots should start nil")
+	}
+}

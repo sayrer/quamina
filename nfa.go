@@ -96,6 +96,16 @@ type nfaBuffers struct {
 	startState     *faState
 	startClosure   []*faState
 	qNumBuf        [MaxBytesInEncoding]byte
+	// Lazy DFA per-goroutine scratch (see lazy_dfa.go). All unsynchronized.
+	lazyKeyBuf        []byte
+	lazySortBuf       []*faState
+	lazyScratchNFA    [2][]*faState
+	lazyScratchNFAIdx int
+	lazyScratchState  lazyDFAState
+	lazySeenStates    map[*faState]uint64
+	lazyStepGen       uint64
+	lazySeenFields    map[*fieldMatcher]bool
+	lazyDFA           *lazyDFA // transient: set per matchesForFields call
 }
 
 func newNfaBuffers() *nfaBuffers {
