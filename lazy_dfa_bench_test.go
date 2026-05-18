@@ -237,3 +237,72 @@ func BenchmarkLazyDFA_DeepEpsilonNest(b *testing.B) {
 		},
 	)
 }
+
+// BenchmarkLazyDFA_CacheThrashing — pattern admits huge state space, inputs
+// engineered to visit uncached (state, byte) pairs constantly. LazyDFA must
+// not regress more than ~10% vs NFAOnly here.
+func BenchmarkLazyDFA_CacheThrashing(b *testing.B) {
+	runBothModes(b,
+		func(opts ...Option) *Quamina {
+			q, _ := New(opts...)
+			_ = q.AddPattern("p", `{"x": [{"shellstyle": "*X*Y*Z*W*V*"}]}`)
+			return q
+		},
+		func(b *testing.B, q *Quamina) {
+			// Permuted events so each visits fresh (state, byte) combos.
+			perms := []string{
+				`{"x":"XYZWVabcdefghij"}`,
+				`{"x":"jihgfedcbaVWZYX"}`,
+				`{"x":"aXbYcZdWeVfghij"}`,
+				`{"x":"VWZXYjihgfedcba"}`,
+				`{"x":"ZYXWVbacdefghij"}`,
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent([]byte(perms[i%len(perms)]))
+			}
+		},
+	)
+}
+
+// BenchmarkLazyDFA_ParallelMatchers — N goroutines on Copy() instances
+// share one coreMatcher → share the lazy DFA cache. Validates the
+// "shared on coreFields" architecture choice: one warmup serves all.
+func BenchmarkLazyDFA_ParallelMatchers(b *testing.B) {
+	for _, gor := range []int{8, 16, 32, 64} {
+		b.Run(fmt.Sprintf("G=%d", gor), func(b *testing.B) {
+			runBothModes(b,
+				func(opts ...Option) *Quamina {
+					q, _ := New(opts...)
+					// Reuse the ManyOverlapping pattern set at N=64.
+					n := 64
+					for i := 0; i < n; i++ {
+						a := byte('a' + (i % 13))
+						c := byte('a' + ((i + 1) % 13))
+						d := byte('a' + ((i + 2) % 13))
+						p := fmt.Sprintf(`{"x": [{"shellstyle": "*%c*%c*%c*"}]}`, a, c, d)
+						_ = q.AddPattern(fmt.Sprintf("p%d", i), p)
+					}
+					return q
+				},
+				func(b *testing.B, q *Quamina) {
+					ev := []byte(`{"x":"abcdefghijklm"}`)
+					// Warm shared cache on one goroutine before parallel section.
+					for i := 0; i < 200; i++ {
+						_, _ = q.MatchesForEvent(ev)
+					}
+					b.SetParallelism(gor)
+					b.ReportAllocs()
+					b.ResetTimer()
+					b.RunParallel(func(pb *testing.PB) {
+						cp := q.Copy()
+						for pb.Next() {
+							_, _ = cp.MatchesForEvent(ev)
+						}
+					})
+				},
+			)
+		})
+	}
+}
