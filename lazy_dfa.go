@@ -146,3 +146,21 @@ func makeState(nfaStates []*faState, bufs *nfaBuffers) *lazyDFAState {
 	}
 	return state
 }
+
+// estimateBytes returns an approximate retained cost (in bytes) of a
+// *lazyDFAState that's about to be published into the cache. Covers:
+//   - the lazyDFAState struct itself + map entry overhead
+//   - the map key string (len(nfaStates)*8 bytes)
+//   - the backing arrays for nfaStates and fieldTransitions
+//
+// Does NOT cover the lazyTransitions struct (initially nil) — that grows
+// during use, but the prototype data shows transitions average <10 bytes
+// of overhead per state. Acceptable approximation per the design spec.
+func estimateBytes(s *lazyDFAState) uint64 {
+	const stateOverhead = 96 // lazyDFAState struct + map entry overhead
+	const keyByteCost = 8    // each state pointer in the key string
+	const ptrSize = 8
+	return uint64(stateOverhead +
+		len(s.nfaStates)*(keyByteCost+ptrSize) +
+		len(s.fieldTransitions)*ptrSize)
+}

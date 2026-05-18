@@ -169,3 +169,19 @@ func TestMakeState_DedupsFieldTransitions(t *testing.T) {
 		t.Error("makeState should copy nfaStates")
 	}
 }
+
+func TestEstimateBytes_GrowsWithStateSize(t *testing.T) {
+	bufs := newNfaBuffers()
+	bufs.lazySeenFields = map[*fieldMatcher]bool{}
+
+	small := makeState([]*faState{{}}, bufs)
+	large := makeState([]*faState{{}, {}, {}, {}, {}}, bufs)
+
+	bs, bl := estimateBytes(small), estimateBytes(large)
+	if bs == 0 || bl == 0 {
+		t.Errorf("estimates should be nonzero: small=%d large=%d", bs, bl)
+	}
+	if bl <= bs {
+		t.Errorf("larger state should cost more bytes: small=%d large=%d", bs, bl)
+	}
+}
