@@ -111,6 +111,7 @@ func (m *coreMatcher) addPatternWithPrinter(x X, patternJSON string, printer pri
 	freshStart.memoryBudget = currentFields.memoryBudget
 	freshStart.currentMemory = currentFields.currentMemory
 	freshStart.baselineAlloc = currentFields.baselineAlloc
+	freshStart.lazyDFABudget = currentFields.lazyDFABudget // (lazyDFA and lazyDFAOnce are intentionally NOT copied — fresh cache for new NFA)
 
 	// Add paths to the segments tree index.
 	for _, field := range patternFields {

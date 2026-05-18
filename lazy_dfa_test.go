@@ -58,3 +58,21 @@ func TestCoreFields_GetOrInitLazyDFA(t *testing.T) {
 		t.Errorf("budget = %d, want %d", ld1.budget, 8<<20)
 	}
 }
+
+func TestAddPattern_PreservesLazyDFABudget(t *testing.T) {
+	cm := newCoreMatcher()
+	// Manually set budget (the New() wiring comes later in Task A6).
+	cm.updateable.Load().lazyDFABudget = 8 << 20
+
+	if err := cm.addPattern("p1", `{"x": ["a"]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	cf := cm.updateable.Load()
+	if cf.lazyDFABudget != 8<<20 {
+		t.Errorf("lazyDFABudget after AddPattern = %d, want %d", cf.lazyDFABudget, 8<<20)
+	}
+	if cf.lazyDFA.Load() != nil {
+		t.Errorf("new coreFields should have nil lazyDFA (fresh cache), got %v", cf.lazyDFA.Load())
+	}
+}
