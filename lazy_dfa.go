@@ -46,3 +46,32 @@ type lazyTransitions struct {
 func newLazyDFA(budget uint64) *lazyDFA {
 	return &lazyDFA{budget: budget}
 }
+
+// LazyDFAStats is a snapshot of the lazy DFA cache's behavior.
+// Safe to read concurrently with MatchesForEvent.
+type LazyDFAStats struct {
+	Enabled         bool
+	CacheBytes      uint64
+	Budget          uint64
+	StateCount      uint64
+	TransitionHits  uint64
+	TransitionMiss  uint64
+	ScratchFallback uint64
+}
+
+// snapshot reads counters from ld (which may be nil if caching is disabled
+// or not yet initialised) into a stats struct for return to the caller.
+func (ld *lazyDFA) snapshot() LazyDFAStats {
+	if ld == nil {
+		return LazyDFAStats{}
+	}
+	return LazyDFAStats{
+		Enabled:         true,
+		CacheBytes:      ld.cacheBytes.Load(),
+		Budget:          ld.budget,
+		StateCount:      ld.stats.stateCount.Load(),
+		TransitionHits:  ld.stats.hits.Load(),
+		TransitionMiss:  ld.stats.misses.Load(),
+		ScratchFallback: ld.stats.scratchFallback.Load(),
+	}
+}

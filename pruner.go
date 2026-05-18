@@ -231,6 +231,14 @@ func (m *prunerMatcher) setMemoryBudget(budget uint64) (uint64, error) {
 	return m.Matcher.setMemoryBudget(budget)
 }
 
+func (m *prunerMatcher) setLazyDFABudget(budget uint64) {
+	m.Matcher.setLazyDFABudget(budget)
+}
+
+func (m *prunerMatcher) lazyDFAStats() LazyDFAStats {
+	return m.Matcher.lazyDFAStats()
+}
+
 // MatchesForFields calls the underlying
 // quamina.coreMatcher.matchesForFields and then maybe rebuilds the
 // index.

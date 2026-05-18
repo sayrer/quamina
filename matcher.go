@@ -7,4 +7,6 @@ type matcher interface {
 	getSegmentsTreeTracker() SegmentsTreeTracker
 	getMemoryBudget() (uint64, uint64)
 	setMemoryBudget(uint64) (uint64, error)
+	setLazyDFABudget(uint64)
+	lazyDFAStats() LazyDFAStats
 }

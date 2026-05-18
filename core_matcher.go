@@ -350,6 +350,31 @@ func noArrayTrailConflict(from []ArrayPos, to []ArrayPos) bool {
 	return true
 }
 
+// setLazyDFABudget configures the per-snapshot lazy DFA cache budget.
+// Takes effect for all coreFields snapshots created from now on (the
+// current snapshot's budget is updated by writing a new coreFields with
+// the same NFA state but the new budget). Lazy DFA is disabled when
+// budget == 0.
+func (m *coreMatcher) setLazyDFABudget(budget uint64) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	old := m.fields()
+	updated := &coreFields{
+		state:         old.state,
+		segmentsTree:  old.segmentsTree,
+		memoryBudget:  old.memoryBudget,
+		currentMemory: old.currentMemory,
+		baselineAlloc: old.baselineAlloc,
+		lazyDFABudget: budget,
+		// lazyDFA and lazyDFAOnce intentionally fresh
+	}
+	m.updateable.Store(updated)
+}
+
+func (m *coreMatcher) lazyDFAStats() LazyDFAStats {
+	return m.fields().getOrInitLazyDFA().snapshot()
+}
+
 func (m *coreMatcher) getSegmentsTreeTracker() SegmentsTreeTracker {
 	return m.fields().segmentsTree
 }

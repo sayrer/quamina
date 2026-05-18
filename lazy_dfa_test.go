@@ -76,3 +76,19 @@ func TestAddPattern_PreservesLazyDFABudget(t *testing.T) {
 		t.Errorf("new coreFields should have nil lazyDFA (fresh cache), got %v", cf.lazyDFA.Load())
 	}
 }
+
+func TestCoreMatcher_SetAndGetLazyDFABudget(t *testing.T) {
+	cm := newCoreMatcher()
+	if s := cm.lazyDFAStats(); s.Enabled || s.Budget != 0 {
+		t.Errorf("fresh matcher should report disabled: %+v", s)
+	}
+
+	cm.setLazyDFABudget(8 << 20)
+	s := cm.lazyDFAStats()
+	if !s.Enabled || s.Budget != 8<<20 {
+		t.Errorf("after setLazyDFABudget(8MiB): %+v", s)
+	}
+	if s.StateCount != 0 || s.CacheBytes != 0 {
+		t.Errorf("before any match, counters should be zero: %+v", s)
+	}
+}
