@@ -159,3 +159,81 @@ func BenchmarkLazyDFA_LiteralInRegex(b *testing.B) {
 		},
 	)
 }
+
+// BenchmarkLazyDFA_QuantifiedCharClass — eager nfa2Dfa territory.
+func BenchmarkLazyDFA_QuantifiedCharClass(b *testing.B) {
+	runBothModes(b,
+		func(opts ...Option) *Quamina {
+			q, _ := New(opts...)
+			for i := 0; i < 5; i++ {
+				p := fmt.Sprintf(`{"x": [{"regex": "[a-z]{8,16}sfx%d"}]}`, i)
+				_ = q.AddPattern(fmt.Sprintf("p%d", i), p)
+			}
+			return q
+		},
+		func(b *testing.B, q *Quamina) {
+			ev := []byte(`{"x":"abcdefghijksfx3"}`)
+			for i := 0; i < 100; i++ {
+				_, _ = q.MatchesForEvent(ev)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent(ev)
+			}
+		},
+	)
+}
+
+// BenchmarkLazyDFA_ManyAnchoredRegex — 200 anchored regex patterns.
+// Cache size scales with event diversity, not pattern count.
+func BenchmarkLazyDFA_ManyAnchoredRegex(b *testing.B) {
+	runBothModes(b,
+		func(opts ...Option) *Quamina {
+			q, _ := New(opts...)
+			for i := 0; i < 200; i++ {
+				p := fmt.Sprintf(`{"x": [{"regex": "PFX[0-9]+SFX%d"}]}`, i)
+				_ = q.AddPattern(fmt.Sprintf("p%d", i), p)
+			}
+			return q
+		},
+		func(b *testing.B, q *Quamina) {
+			events := [][]byte{
+				[]byte(`{"x":"PFX42SFX17"}`),
+				[]byte(`{"x":"PFX99SFX42"}`),
+				[]byte(`{"x":"PFX1SFX199"}`),
+				[]byte(`{"x":"PFX9999SFX0"}`),
+			}
+			for i := 0; i < 100; i++ {
+				_, _ = q.MatchesForEvent(events[i%len(events)])
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent(events[i%len(events)])
+			}
+		},
+	)
+}
+
+// BenchmarkLazyDFA_DeepEpsilonNest — maximum epsilon closure depth.
+func BenchmarkLazyDFA_DeepEpsilonNest(b *testing.B) {
+	runBothModes(b,
+		func(opts ...Option) *Quamina {
+			q, _ := New(opts...)
+			_ = q.AddPattern("p", `{"x": [{"regex": "((a|b|c)*(d|e|f)*)+"}]}`)
+			return q
+		},
+		func(b *testing.B, q *Quamina) {
+			ev := []byte(`{"x":"abcdefabcdefabcdef"}`)
+			for i := 0; i < 100; i++ {
+				_, _ = q.MatchesForEvent(ev)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = q.MatchesForEvent(ev)
+			}
+		},
+	)
+}
