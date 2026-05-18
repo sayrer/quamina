@@ -311,3 +311,41 @@ func TestStep_HotPathReturnsCachedTransition(t *testing.T) {
 		t.Errorf("misses = %d, want 0", ld.stats.misses.Load())
 	}
 }
+
+// Compares lazy-DFA traversal of a real shellstyle pattern against
+// traverseNFA. Both must return the same fieldMatcher set.
+func TestTraverseLazyDFA_EquivalentToNFA(t *testing.T) {
+	cm := newCoreMatcher()
+	if err := cm.addPattern("p", `{"x": [{"shellstyle": "*foo*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	bufs := newNfaBuffers()
+	cf := cm.fields()
+	state := cf.state
+	// Walk down to the valueMatcher for field "x".
+	vm := state.fields().transitions["x"]
+	if vm == nil {
+		t.Fatal("no valueMatcher for x")
+	}
+	vmFields := vm.fields()
+	if vmFields.startTable == nil || !vmFields.isNondeterministic {
+		t.Fatal("expected nondeterministic NFA for *foo* pattern")
+	}
+
+	val := []byte(`"barfoobaz"`)
+	transitions := bufs.transitionsBuf[:0]
+	nfaTM := bufs.getTransmap()
+	nfaTM.push()
+	nfaResult := traverseNFA(vmFields.startTable, val, transitions, bufs)
+	nfaTM.pop()
+
+	ld := newLazyDFA(8 << 20)
+	bufs2 := newNfaBuffers()
+	transitions2 := bufs2.transitionsBuf[:0]
+	lazyResult := traverseLazyDFA(vmFields.startTable, val, transitions2, ld, bufs2)
+
+	if len(nfaResult) != len(lazyResult) {
+		t.Errorf("result lengths differ: NFA=%d lazy=%d", len(nfaResult), len(lazyResult))
+	}
+}

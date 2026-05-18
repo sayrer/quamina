@@ -330,3 +330,71 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAS
 	}
 	return ld.computeStep(state, b, bufs)
 }
+
+// traverseLazyDFA mirrors traverseNFA's signature but routes through the
+// lazy DFA cache. Returns the collected fieldMatchers reachable by
+// consuming val (with a trailing valueTerminator) from table's start state.
+func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers) []*fieldMatcher {
+	// Get or compute the cached start state.
+	currentState := ld.startState.Load()
+	if currentState == nil {
+		startNFA := bufs.getStartState(table)
+		startStates := startNFA.epsilonClosure
+		key := computeKey(startStates, bufs)
+		s := ld.lookupOrInsert(key, startStates, bufs)
+		if s == nil {
+			// Budget too tight to even cache the start state — use scratch.
+			writeIdx := 1 - bufs.lazyScratchNFAIdx
+			bufs.lazyScratchNFA[writeIdx] = append(bufs.lazyScratchNFA[writeIdx][:0], startStates...)
+			currentState = populateScratchState(bufs, writeIdx)
+		} else {
+			// First publish wins; concurrent publishers race benignly (same key
+			// → same map entry → same *lazyDFAState).
+			ld.startState.CompareAndSwap(nil, s)
+			currentState = s
+		}
+	}
+
+	// Seed fieldSet with any incoming transitions.
+	fieldSet := bufs.getFieldSet()
+	clear(fieldSet)
+	for _, fm := range transitions {
+		fieldSet[fm] = true
+	}
+	// Collect fieldMatchers from the start state.
+	for _, fm := range currentState.fieldTransitions {
+		fieldSet[fm] = true
+	}
+
+	for index := 0; index <= len(val); index++ {
+		var utf8Byte byte
+		if index < len(val) {
+			utf8Byte = val[index]
+		} else {
+			utf8Byte = valueTerminator
+		}
+		next := ld.step(currentState, utf8Byte, bufs)
+		if next == nil {
+			break
+		}
+		for _, fm := range next.fieldTransitions {
+			fieldSet[fm] = true
+		}
+		currentState = next
+	}
+
+	// Materialize into the current transmap buffer.
+	if len(fieldSet) == 0 {
+		return nil
+	}
+	tm := bufs.getTransmap()
+	tm.push()
+	buf := tm.levels[tm.depth]
+	for fm := range fieldSet {
+		buf = append(buf, fm)
+	}
+	tm.levels[tm.depth] = buf
+	result := buf
+	tm.pop()
+	return result
+}
