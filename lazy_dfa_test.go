@@ -551,3 +551,42 @@ func TestLazyDFA_ConcurrentMatchesSameSnapshot(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestLazyDFA_ConcurrentMatchesAcrossAddPattern(t *testing.T) {
+	q, _ := New(WithLazyDFACacheBytes(8 << 20))
+	if err := q.AddPattern("p0", `{"x": [{"shellstyle": "*foo*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	var matchWG sync.WaitGroup
+	const matchers = 8
+	matchWG.Add(matchers)
+	for g := 0; g < matchers; g++ {
+		go func() {
+			defer matchWG.Done()
+			cp := q.Copy()
+			ev := []byte(`{"x":"a foo b"}`)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					if _, err := cp.MatchesForEvent(ev); err != nil {
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	// Add patterns in the foreground while matchers churn.
+	for i := 1; i < 8; i++ {
+		pat := fmt.Sprintf(`{"x": [{"shellstyle": "*tag%d*"}]}`, i)
+		if err := q.AddPattern(fmt.Sprintf("p%d", i), pat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	matchWG.Wait()
+}
