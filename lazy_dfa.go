@@ -464,7 +464,18 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		} else {
 			utf8Byte = valueTerminator
 		}
-		next := ld.step(currentState, utf8Byte, bufs)
+
+		// Inlined fast path (was ld.step). Falls through to computeStep on miss.
+		var next *lazyDFAState
+		if trans := currentState.transitions.Load(); trans != nil {
+			if idx := bytes.IndexByte(trans.keys, utf8Byte); idx >= 0 {
+				bufs.lazyLocalHits++
+				next = trans.values[idx]
+			}
+		}
+		if next == nil {
+			next = ld.computeStep(currentState, utf8Byte, bufs)
+		}
 		if next == nil {
 			break
 		}
