@@ -236,23 +236,23 @@ func TestAppendTransition_NilCurAndIdempotent(t *testing.T) {
 	// First append onto nil transitions.
 	appendTransition(state, 'a', next1)
 	cur := state.transitions.Load()
-	if cur == nil || len(cur.keys) != 1 || cur.keys[0] != 'a' || cur.values[0] != next1 {
-		t.Errorf("after first append: %+v", cur)
+	if cur == nil || cur['a'] != next1 {
+		t.Errorf("after first append: cur=%v cur['a']=%v", cur, cur['a'])
 	}
 
 	// Second append for different byte.
 	next2 := &lazyDFAState{cached: true}
 	appendTransition(state, 'b', next2)
 	cur = state.transitions.Load()
-	if len(cur.keys) != 2 || cur.keys[1] != 'b' || cur.values[1] != next2 {
-		t.Errorf("after second append: %+v", cur)
+	if cur['a'] != next1 || cur['b'] != next2 {
+		t.Errorf("after second append: cur['a']=%v cur['b']=%v", cur['a'], cur['b'])
 	}
 
-	// Double-call for same byte: no-op, no duplicate.
+	// Double-call for same byte: no-op, entry unchanged.
 	appendTransition(state, 'a', next1)
 	cur = state.transitions.Load()
-	if len(cur.keys) != 2 {
-		t.Errorf("double-call should be idempotent, got len=%d", len(cur.keys))
+	if cur['a'] != next1 || cur['b'] != next2 {
+		t.Errorf("double-call should be idempotent: cur['a']=%v cur['b']=%v", cur['a'], cur['b'])
 	}
 }
 
@@ -477,7 +477,10 @@ func TestLazyDFA_CacheLifetimeAcrossAddPattern(t *testing.T) {
 
 func TestLazyDFA_CacheFullBehavior(t *testing.T) {
 	// Tight budget so we hit cache-full quickly.
-	q, _ := New(WithLazyDFACacheBytes(512))
+	// Each cached state now costs ~2144 bytes (96 overhead + 2048 for the
+	// [256]*lazyDFAState transitions array), so 4096 bytes allows ~1 state
+	// before the cache fills and forces scratch fallback.
+	q, _ := New(WithLazyDFACacheBytes(4096))
 	if err := q.AddPattern("p", `{"x": [{"shellstyle": "*a*b*c*d*"}]}`); err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +506,7 @@ func TestLazyDFA_CacheFullBehavior(t *testing.T) {
 	if s.CacheBytes > s.Budget {
 		t.Errorf("CacheBytes (%d) should not exceed Budget (%d)", s.CacheBytes, s.Budget)
 	}
-	// At a 2048-byte budget we should see scratch fallback on diverse input.
+	// At a tight budget we should see scratch fallback on diverse input.
 	if s.ScratchFallback == 0 {
 		t.Errorf("expected scratch-fallback count > 0, got %+v", s)
 	}

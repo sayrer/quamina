@@ -1,7 +1,6 @@
 package quamina
 
 import (
-	"bytes"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -54,12 +53,11 @@ type lazyDFAState struct {
 	cached           bool // true when published into the cache
 }
 
-// lazyTransitions is immutable once stored. Updates allocate a new struct
-// and atomic.Store it on the owning lazyDFAState.
-type lazyTransitions struct {
-	keys   []byte
-	values []*lazyDFAState
-}
+// lazyTransitions is a direct 256-entry transition table for a cached
+// state. Hot-path step is a single index — trans[b] — matching the cost
+// of smallTable.step. Costs 2KB per cached state; budget self-regulates.
+// Immutable once stored; updates allocate a fresh array and atomic.Store.
+type lazyTransitions [256]*lazyDFAState
 
 func newLazyDFA(budget uint64) *lazyDFA {
 	return &lazyDFA{budget: budget}
@@ -168,17 +166,20 @@ func makeState(nfaStates []*faState, bufs *nfaBuffers) *lazyDFAState {
 //   - the lazyDFAState struct itself + map entry overhead
 //   - the map key string (len(nfaStates)*8 bytes)
 //   - the backing arrays for nfaStates and fieldTransitions
+//   - the lazyTransitions [256]*lazyDFAState array (2048 bytes, always charged)
 //
-// Does NOT cover the lazyTransitions struct (initially nil) — that grows
-// during use, but the prototype data shows transitions average <10 bytes
-// of overhead per state. Acceptable approximation per the design spec.
+// The transitions array is lazy-allocated on first transition, but we charge
+// for it unconditionally so the budget accounts honestly for the full per-state
+// cost once warm.
 func estimateBytes(s *lazyDFAState) uint64 {
-	const stateOverhead = 96 // lazyDFAState struct + map entry overhead
-	const keyByteCost = 8    // each state pointer in the key string
+	const stateOverhead = 96             // lazyDFAState struct + map entry overhead
+	const keyByteCost = 8                // each state pointer in the key string
 	const ptrSize = 8
+	const transitionsArrayBytes = 256 * 8 // [256]*lazyDFAState
 	return uint64(stateOverhead +
 		len(s.nfaStates)*(keyByteCost+ptrSize) +
-		len(s.fieldTransitions)*ptrSize)
+		len(s.fieldTransitions)*ptrSize +
+		transitionsArrayBytes)
 }
 
 // lookupOrInsertStart is like lookupOrInsert but for the NFA table's start
@@ -270,27 +271,19 @@ func appendTransition(state *lazyDFAState, b byte, nextState *lazyDFAState) {
 	state.transMu.Lock()
 	defer state.transMu.Unlock()
 
-	// cur may be nil if this is the first transition on the state.
 	cur := state.transitions.Load()
-	var curKeys []byte
-	var curValues []*lazyDFAState
-	if cur != nil {
-		if idx := bytes.IndexByte(cur.keys, b); idx >= 0 {
-			return // someone else added it; their nextState is identical
-		}
-		curKeys = cur.keys
-		curValues = cur.values
+	if cur != nil && cur[b] != nil {
+		return // someone else added it; their nextState is identical
 	}
 
-	newKeys := make([]byte, 0, len(curKeys)+1)
-	newKeys = append(newKeys, curKeys...)
-	newKeys = append(newKeys, b)
-
-	newValues := make([]*lazyDFAState, 0, len(curValues)+1)
-	newValues = append(newValues, curValues...)
-	newValues = append(newValues, nextState)
-
-	state.transitions.Store(&lazyTransitions{keys: newKeys, values: newValues})
+	// Allocate a fresh immutable transitions array, copy old entries if any,
+	// set the new entry, atomic-store.
+	next := new(lazyTransitions)
+	if cur != nil {
+		*next = *cur // value copy of the [256] array
+	}
+	next[b] = nextState
+	state.transitions.Store(next)
 }
 
 // computeStep is the slow path of step(). Computes the next NFA state set
@@ -387,9 +380,9 @@ func populateScratchState(bufs *nfaBuffers, writeIdx int) *lazyDFAState {
 func (ld *lazyDFA) step(state *lazyDFAState, b byte, bufs *nfaBuffers) *lazyDFAState {
 	trans := state.transitions.Load()
 	if trans != nil {
-		if idx := bytes.IndexByte(trans.keys, b); idx >= 0 {
+		if next := trans[b]; next != nil {
 			bufs.lazyLocalHits++
-			return trans.values[idx]
+			return next
 		}
 	}
 	return ld.computeStep(state, b, bufs)
@@ -479,9 +472,9 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		// Inlined fast path (was ld.step). Falls through to computeStep on miss.
 		var next *lazyDFAState
 		if trans := currentState.transitions.Load(); trans != nil {
-			if idx := bytes.IndexByte(trans.keys, utf8Byte); idx >= 0 {
+			if n := trans[utf8Byte]; n != nil {
 				bufs.lazyLocalHits++
-				next = trans.values[idx]
+				next = n
 			}
 		}
 		if next == nil {
