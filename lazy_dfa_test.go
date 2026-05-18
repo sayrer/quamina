@@ -1,6 +1,10 @@
 package quamina
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
 
 func TestLazyDFA_NewSetsBudget(t *testing.T) {
 	ld := newLazyDFA(8 << 20)
@@ -507,5 +511,43 @@ func TestLazyDFA_CacheFullBehavior(t *testing.T) {
 		if !sameXSet(ng, lg) {
 			t.Errorf("event %q: nfa=%v lazy=%v", ev, ng, lg)
 		}
+	}
+}
+
+func TestLazyDFA_ConcurrentMatchesSameSnapshot(t *testing.T) {
+	q, _ := New(WithLazyDFACacheBytes(8 << 20))
+	for i := 0; i < 8; i++ {
+		pat := fmt.Sprintf(`{"x": [{"shellstyle": "*tag%d*"}]}`, i)
+		if err := q.AddPattern(fmt.Sprintf("p%d", i), pat); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const goroutines = 16
+	const itersPerG = 200
+	events := [][]byte{
+		[]byte(`{"x":"prefix tag3 suffix"}`),
+		[]byte(`{"x":"another tag5 here"}`),
+		[]byte(`{"x":"no match"}`),
+	}
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errs := make(chan error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			cp := q.Copy()
+			for i := 0; i < itersPerG; i++ {
+				if _, err := cp.MatchesForEvent(events[i%len(events)]); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
