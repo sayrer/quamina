@@ -450,15 +450,15 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 		currentState = populateScratchState(bufs, writeIdx)
 	}
 
-	// Seed fieldSet with any incoming transitions.
-	fieldSet := bufs.getFieldSet()
-	clear(fieldSet)
+	// Seed field dedup with any incoming transitions.
+	// resetFieldList bumps the generation counter (avoiding O(n) clear) and resets the slice.
+	bufs.resetFieldList()
 	for _, fm := range transitions {
-		fieldSet[fm] = true
+		bufs.addField(fm)
 	}
 	// Collect fieldMatchers from the start state.
 	for _, fm := range currentState.fieldTransitions {
-		fieldSet[fm] = true
+		bufs.addField(fm)
 	}
 
 	for index := 0; index <= len(val); index++ {
@@ -484,7 +484,7 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 			break
 		}
 		for _, fm := range next.fieldTransitions {
-			fieldSet[fm] = true
+			bufs.addField(fm)
 		}
 		currentState = next
 	}
@@ -498,14 +498,12 @@ func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher,
 	}
 
 	// Materialize into current transmap buffer.
-	if len(fieldSet) == 0 {
+	if len(bufs.fieldList) == 0 {
 		return nil
 	}
 	tm := bufs.getTransmap()
 	buf := tm.levels[tm.depth] // already [:0] from caller's push()
-	for fm := range fieldSet {
-		buf = append(buf, fm)
-	}
+	buf = append(buf, bufs.fieldList...)
 	tm.levels[tm.depth] = buf
 	return buf
 }

@@ -44,9 +44,9 @@ huge numbers of states and splices. So, we want to optimize merging.
 
 // transmap is a stack of []*fieldMatcher buffers. Only the result slice needs
 // stacking: it escapes from traverseNFA and is iterated in tryToMatch while
-// recursive calls push to higher levels. The dedup set lives in nfaBuffers
-// as fieldSet and is cleared at the top of each traverseNFA call (no stacking
-// needed because traverseNFA is not recursive).
+// recursive calls push to higher levels. The dedup state lives in nfaBuffers
+// as fieldGen/fieldGenMap/fieldList and is reset at the top of each traverseNFA
+// call via resetFieldList (no stacking needed because traverseNFA is not recursive).
 //
 // Usage: push() in tryToMatch before calling transitionOn, pop() after
 // iterating the results. traverseNFA writes into levels[depth] directly.
@@ -92,10 +92,15 @@ type nfaBuffers struct {
 	transitionsBuf []*fieldMatcher
 	resultBuf      []X
 	transmap       *transmap
-	fieldSet       map[*fieldMatcher]bool
-	startState     *faState
-	startClosure   []*faState
-	qNumBuf        [MaxBytesInEncoding]byte
+	// fieldGen/fieldGenMap/fieldList replace fieldSet for per-traversal field
+	// dedup. Generation bump avoids O(n) clear; slice iteration replaces O(n+hash)
+	// map range. Mirrors the closureBuffers pattern in epsi_closure.go.
+	fieldGen    uint64
+	fieldGenMap map[*fieldMatcher]uint64
+	fieldList   []*fieldMatcher
+	startState   *faState
+	startClosure []*faState
+	qNumBuf      [MaxBytesInEncoding]byte
 	// Lazy DFA per-goroutine scratch (see lazy_dfa.go). All unsynchronized.
 	lazyKeyBuf        []byte
 	lazySortBuf       []*faState
@@ -150,11 +155,22 @@ func (nb *nfaBuffers) getTransmap() *transmap {
 	return nb.transmap
 }
 
-func (nb *nfaBuffers) getFieldSet() map[*fieldMatcher]bool {
-	if nb.fieldSet == nil {
-		nb.fieldSet = make(map[*fieldMatcher]bool)
+// resetFieldList prepares the per-match field dedup structures for a fresh
+// traversal. Generation bump avoids the O(n) clear of the old map.
+func (nb *nfaBuffers) resetFieldList() {
+	if nb.fieldGenMap == nil {
+		nb.fieldGenMap = make(map[*fieldMatcher]uint64)
 	}
-	return nb.fieldSet
+	nb.fieldGen++
+	nb.fieldList = nb.fieldList[:0]
+}
+
+// addField dedupes and appends a *fieldMatcher to nb.fieldList.
+func (nb *nfaBuffers) addField(fm *fieldMatcher) {
+	if nb.fieldGenMap[fm] != nb.fieldGen {
+		nb.fieldGenMap[fm] = nb.fieldGen
+		nb.fieldList = append(nb.fieldList, fm)
+	}
 }
 
 func (nb *nfaBuffers) getStartState(table *smallTable) *faState {
@@ -287,11 +303,11 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 	currentStates = append(currentStates, bufs.getStartState(table))
 	nextStates := bufs.getBuf2()
 
-	// Use flat dedup set — no stacking needed since traverseNFA is not recursive
-	fieldSet := bufs.getFieldSet()
-	clear(fieldSet)
+	// Use generation-based field dedup — no stacking needed since traverseNFA is not recursive.
+	// resetFieldList bumps the generation counter (avoiding O(n) clear) and resets the slice.
+	bufs.resetFieldList()
 	for _, fm := range transitions {
-		fieldSet[fm] = true
+		bufs.addField(fm)
 	}
 
 	for index := 0; len(currentStates) != 0 && index <= len(val); index++ {
@@ -304,7 +320,7 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 		for _, state := range currentStates {
 			for _, ecState := range state.epsilonClosure {
 				for _, fm := range ecState.fieldTransitions {
-					fieldSet[fm] = true
+					bufs.addField(fm)
 				}
 				if nextStep := ecState.table.step(utf8Byte); nextStep != nil {
 					nextStates = append(nextStates, nextStep)
@@ -323,7 +339,7 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 	for _, state := range currentStates {
 		for _, ecState := range state.epsilonClosure {
 			for _, fm := range ecState.fieldTransitions {
-				fieldSet[fm] = true
+				bufs.addField(fm)
 			}
 		}
 	}
@@ -332,14 +348,12 @@ func traverseNFA(table *smallTable, val []byte, transitions []*fieldMatcher, buf
 	bufs.buf2 = nextStates[:0]
 
 	// Materialize into current transmap buffer
-	if len(fieldSet) == 0 {
+	if len(bufs.fieldList) == 0 {
 		return nil
 	}
 	tm := bufs.getTransmap()
 	buf := tm.levels[tm.depth] // already [:0] from push()
-	for fm := range fieldSet {
-		buf = append(buf, fm)
-	}
+	buf = append(buf, bufs.fieldList...)
 	tm.levels[tm.depth] = buf
 	return buf
 }
