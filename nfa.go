@@ -107,6 +107,12 @@ type nfaBuffers struct {
 	lazySeenFields    map[*fieldMatcher]bool
 	lazyDFA           *lazyDFA // transient: set per matchesForFields call
 	lazyLocalHits     uint64   // accumulated cache hits; flushed to ld.stats.hits once per traverseLazyDFA call
+	// Per-goroutine cache of (table → start state) for the current lazyDFA
+	// snapshot. lazyDFAForStart is the *lazyDFA pointer this cache belongs
+	// to; if it changes (AddPattern swapped coreFields → new lazyDFA), we
+	// clear the cache.
+	lazyStartCache  map[*smallTable]*lazyDFAState
+	lazyDFAForStart *lazyDFA
 }
 
 func newNfaBuffers() *nfaBuffers {

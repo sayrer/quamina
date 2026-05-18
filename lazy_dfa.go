@@ -424,19 +424,30 @@ func computeStartKey(table *smallTable, bufs *nfaBuffers) []byte {
 // lazy DFA cache. Returns the collected fieldMatchers reachable by
 // consuming val (with a trailing valueTerminator) from table's start state.
 func traverseLazyDFA(table *smallTable, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers) []*fieldMatcher {
-	// Compute (or look up cached) start state for THIS table.
-	//
-	// We key on the *smallTable pointer (not bufs.startState, which is a
-	// shared synthetic *faState whose address never changes across calls).
-	//
-	// We also must NOT pass bufs.startState to lookupOrInsert/makeState: if
-	// it were stored in the cached lazyDFAState.nfaStates, another goroutine
-	// could later call getStartState(differentTable) and mutate
-	// bufs.startState.table concurrently with computeStep reading it — a
-	// data race. Instead, we allocate a stable, immutable *faState per
-	// cache-miss; the allocation is amortized because the result is cached.
-	key := computeStartKey(table, bufs)
-	currentState := ld.lookupOrInsertStart(key, table, bufs)
+	// Per-goroutine fast path: if this bufs already cached the start state
+	// for (this lazyDFA, this table), reuse it. Invalidate the local cache
+	// when the snapshot's *lazyDFA pointer changes (AddPattern).
+	var currentState *lazyDFAState
+	if bufs.lazyDFAForStart != ld {
+		// Snapshot changed — clear stale entries.
+		if bufs.lazyStartCache != nil {
+			clear(bufs.lazyStartCache)
+		}
+		bufs.lazyDFAForStart = ld
+	}
+	if cached, ok := bufs.lazyStartCache[table]; ok {
+		currentState = cached
+	} else {
+		key := computeStartKey(table, bufs)
+		currentState = ld.lookupOrInsertStart(key, table, bufs)
+		if currentState != nil {
+			// Cache the start state (not the scratch fallback).
+			if bufs.lazyStartCache == nil {
+				bufs.lazyStartCache = make(map[*smallTable]*lazyDFAState)
+			}
+			bufs.lazyStartCache[table] = currentState
+		}
+	}
 	if currentState == nil {
 		// Budget too tight to even cache the start state — use scratch.
 		startNFA := bufs.getStartState(table)
