@@ -1,8 +1,10 @@
 package quamina
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // lazyDFA is a shared, lock-free-on-hit cache of DFA states materialised
@@ -74,4 +76,49 @@ func (ld *lazyDFA) snapshot() LazyDFAStats {
 		TransitionMiss:  ld.stats.misses.Load(),
 		ScratchFallback: ld.stats.scratchFallback.Load(),
 	}
+}
+
+// computeKey builds a cache key from a set of NFA states into bufs.lazyKeyBuf,
+// reusing scratch buffers to avoid allocation. The returned slice is only
+// valid until the next computeKey call on the same bufs.
+func computeKey(states []*faState, bufs *nfaBuffers) []byte {
+	if len(states) == 0 {
+		return bufs.lazyKeyBuf[:0]
+	}
+
+	if cap(bufs.lazySortBuf) < len(states) {
+		bufs.lazySortBuf = make([]*faState, len(states))
+	}
+	bufs.lazySortBuf = bufs.lazySortBuf[:len(states)]
+	copy(bufs.lazySortBuf, states)
+	slices.SortFunc(bufs.lazySortBuf, func(a, b *faState) int {
+		addrA := uintptr(unsafe.Pointer(a))
+		addrB := uintptr(unsafe.Pointer(b))
+		if addrA < addrB {
+			return -1
+		}
+		if addrA > addrB {
+			return 1
+		}
+		return 0
+	})
+
+	needed := len(states) * 8
+	if cap(bufs.lazyKeyBuf) < needed {
+		bufs.lazyKeyBuf = make([]byte, needed)
+	}
+	bufs.lazyKeyBuf = bufs.lazyKeyBuf[:needed]
+	for i, s := range bufs.lazySortBuf {
+		addr := uintptr(unsafe.Pointer(s))
+		off := i * 8
+		bufs.lazyKeyBuf[off] = byte(addr)
+		bufs.lazyKeyBuf[off+1] = byte(addr >> 8)
+		bufs.lazyKeyBuf[off+2] = byte(addr >> 16)
+		bufs.lazyKeyBuf[off+3] = byte(addr >> 24)
+		bufs.lazyKeyBuf[off+4] = byte(addr >> 32)
+		bufs.lazyKeyBuf[off+5] = byte(addr >> 40)
+		bufs.lazyKeyBuf[off+6] = byte(addr >> 48)
+		bufs.lazyKeyBuf[off+7] = byte(addr >> 56)
+	}
+	return bufs.lazyKeyBuf
 }

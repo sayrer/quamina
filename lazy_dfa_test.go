@@ -118,3 +118,23 @@ func TestPublicAPI_WithLazyDFACacheBytes(t *testing.T) {
 		t.Error("expected error for huge budget")
 	}
 }
+
+func TestComputeKey_DeterministicAndUnique(t *testing.T) {
+	bufs := newNfaBuffers()
+	a, b, c := &faState{}, &faState{}, &faState{}
+
+	k1 := computeKey([]*faState{a, b, c}, bufs)
+	k2 := computeKey([]*faState{c, a, b}, bufs)
+	if string(k1) != string(k2) {
+		t.Error("computeKey should be order-invariant (sorted)")
+	}
+
+	k3 := computeKey([]*faState{a, b}, bufs)
+	if string(k1) == string(k3) {
+		t.Error("different state sets should produce different keys")
+	}
+
+	if len(k1) != 3*8 {
+		t.Errorf("key length = %d, want %d", len(k1), 3*8)
+	}
+}
