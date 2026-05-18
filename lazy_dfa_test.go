@@ -464,3 +464,48 @@ func TestLazyDFA_CacheLifetimeAcrossAddPattern(t *testing.T) {
 		t.Errorf("expected [p2], got %v", got)
 	}
 }
+
+func TestLazyDFA_CacheFullBehavior(t *testing.T) {
+	// Tight budget so we hit cache-full quickly.
+	q, _ := New(WithLazyDFACacheBytes(512))
+	if err := q.AddPattern("p", `{"x": [{"shellstyle": "*a*b*c*d*"}]}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive a mix of events to fill the cache and force scratch fallback.
+	events := []string{
+		`{"x":"xaxbxcxdx"}`,
+		`{"x":"abcde"}`,
+		`{"x":"dcba"}`,
+		`{"x":"aabbccdd"}`,
+	}
+	for i := 0; i < 200; i++ {
+		ev := events[i%len(events)]
+		if _, err := q.MatchesForEvent([]byte(ev)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := q.LazyDFAStats()
+	if s.CacheBytes == 0 {
+		t.Error("expected cache to fill, CacheBytes=0")
+	}
+	if s.CacheBytes > s.Budget {
+		t.Errorf("CacheBytes (%d) should not exceed Budget (%d)", s.CacheBytes, s.Budget)
+	}
+	// At a 2048-byte budget we should see scratch fallback on diverse input.
+	if s.ScratchFallback == 0 {
+		t.Errorf("expected scratch-fallback count > 0, got %+v", s)
+	}
+
+	// Correctness: match result identical to NFA-only baseline.
+	qNFA, _ := New()
+	_ = qNFA.AddPattern("p", `{"x": [{"shellstyle": "*a*b*c*d*"}]}`)
+	for _, ev := range events {
+		ng, _ := qNFA.MatchesForEvent([]byte(ev))
+		lg, _ := q.MatchesForEvent([]byte(ev))
+		if !sameXSet(ng, lg) {
+			t.Errorf("event %q: nfa=%v lazy=%v", ev, ng, lg)
+		}
+	}
+}
