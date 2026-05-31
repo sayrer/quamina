@@ -1,60 +1,74 @@
 package quamina
 
+import "sync"
+
 // tableMark carries the per-smallTable scratch used only during epsilon
 // closure computation (lastVisitedGen for NFA walk dedup, and closureGen /
 // closureRep for table-pointer dedup). These used to live as fields on
 // smallTable itself, but they are purely build-time state and their
 // permanent presence on every smallTable was wasted steady-state memory.
-// They now live in a per-call side table that is discarded when
-// epsilonClosure returns.
+// They now live in a side table inside closureBuffers; the buffers are
+// pooled and reclaimed by GC, so nothing persists on smallTable.
+//
+// tableMark is stored by value in closureBuffers.tables so that marking a
+// table costs no per-table heap allocation.
 type tableMark struct {
-	lastVisitedGen uint32
-	closureGen     uint32
+	lastVisitedGen uint64
+	closureGen     uint64
 	closureRep     *faState
 }
 
-// closureBuffers carries per-epsilonClosure-call scratch. The two maps
-// replace build-time fields that used to sit on smallTable/faState;
-// they live only for the duration of the closure computation.
+// closureBuffers carries the scratch for epsilon closure computation. It is
+// pooled (see closureBufferPool) and reused across epsilonClosure calls, so
+// the maps are allocated once and grown, not rebuilt per call. Visited
+// tracking is generation-based: gen only ever increases, so stale map
+// entries from a previous use are simply older than the current generation
+// and need no clearing.
 type closureBuffers struct {
-	gen           uint32                     // bumped by closureForNfa (NFA walk dedup) and the closureForState post-pass (table-pointer dedup)
-	closureSetGen uint32                     // snapshot of gen used by traverseEpsilons to dedup faState visits within one closure
-	closureList   []*faState                 // reusable accumulator for the state list before the dedup post-pass
-	tables        map[*smallTable]*tableMark // per-call side-table for smallTable scratch (lastVisitedGen, closureRep)
-	states        map[*faState]uint32        // per-faState last-visited generation, used by traverseEpsilons
+	gen           uint64                    // monotonic counter; bumped by closureForState's two dedup phases
+	walkGen       uint64                    // snapshot of gen for the current closureForNfa walk (NFA table dedup)
+	closureSetGen uint64                    // snapshot of gen for the current closureForState faState dedup
+	closureList   []*faState                // reusable accumulator for the state list before the dedup post-pass
+	tables        map[*smallTable]tableMark // per-table scratch (lastVisitedGen, closureGen, closureRep)
+	states        map[*faState]uint64       // per-faState last-visited generation, used by traverseEpsilons
 }
 
 func newClosureBuffers() *closureBuffers {
 	return &closureBuffers{
-		gen:    1,
-		tables: make(map[*smallTable]*tableMark),
-		states: make(map[*faState]uint32),
+		tables: make(map[*smallTable]tableMark),
+		states: make(map[*faState]uint64),
 	}
 }
 
-// tableMarkOf returns the tableMark for t, creating one on first access.
-func (b *closureBuffers) tableMarkOf(t *smallTable) *tableMark {
-	m, ok := b.tables[t]
-	if !ok {
-		m = &tableMark{}
-		b.tables[t] = m
-	}
-	return m
+// closureBufferPool reuses closureBuffers (and their maps) across the many
+// epsilonClosure calls a build performs, eliminating per-call map allocation.
+// The pool is concurrency-safe, and sync.Pool drops its contents on GC, so
+// the maps do not become permanent steady-state memory.
+var closureBufferPool = sync.Pool{
+	New: func() any { return newClosureBuffers() },
 }
 
 // epsilonClosure walks the automaton starting from the given table
 // and precomputes the epsilon closure for every reachable faState.
 func epsilonClosure(table *smallTable) {
-	bufs := newClosureBuffers()
+	bufs := closureBufferPool.Get().(*closureBuffers)
+	// Take a fresh generation for this walk. closureForState bumps bufs.gen
+	// for its own dedup phases, but it never touches walkGen, so the table
+	// dedup in closureForNfa compares against a value that stays fixed for
+	// the whole walk (matching the old snapshot-into-bufs.generation scheme).
+	bufs.gen++
+	bufs.walkGen = bufs.gen
 	closureForNfa(table, bufs)
+	closureBufferPool.Put(bufs)
 }
 
 func closureForNfa(table *smallTable, bufs *closureBuffers) {
-	mark := bufs.tableMarkOf(table)
-	if mark.lastVisitedGen == bufs.gen {
+	mark := bufs.tables[table]
+	if mark.lastVisitedGen == bufs.walkGen {
 		return
 	}
-	mark.lastVisitedGen = bufs.gen
+	mark.lastVisitedGen = bufs.walkGen
+	bufs.tables[table] = mark
 
 	for _, state := range table.steps {
 		if state != nil {
@@ -85,8 +99,8 @@ func closureForState(state *faState, bufs *closureBuffers) {
 		return
 	}
 
-	// Use generation-based visited tracking instead of a fresh map per
-	// traversal. bufs.states records which gen last visited each state.
+	// Generation-based visited tracking: bufs.states records which gen last
+	// visited each state, so we never clear the map between traversals.
 	bufs.gen++
 	bufs.closureSetGen = bufs.gen
 	bufs.closureList = bufs.closureList[:0]
@@ -105,7 +119,7 @@ func closureForState(state *faState, bufs *closureBuffers) {
 	dedupGen := bufs.gen
 	closure := make([]*faState, 0, len(bufs.closureList))
 	for _, s := range bufs.closureList {
-		mark := bufs.tableMarkOf(s.table)
+		mark := bufs.tables[s.table]
 		if mark.closureGen == dedupGen {
 			if sameFieldTransitions(mark.closureRep, s) {
 				continue
@@ -113,6 +127,7 @@ func closureForState(state *faState, bufs *closureBuffers) {
 		} else {
 			mark.closureGen = dedupGen
 			mark.closureRep = s
+			bufs.tables[s.table] = mark
 		}
 		closure = append(closure, s)
 	}
