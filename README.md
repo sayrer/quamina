@@ -368,7 +368,7 @@ Go compiles with [default CPU capabilites](https://go.dev/wiki/MinimumRequiremen
 for each architecture. In particular, its [AMD64](https://go.dev/wiki/MinimumRequirements#amd64)
 defaults are quite conservative. Changing this default can yield up to 10% improvements
 with no code changes, if you know the target machines' capabilites. No signifcant
-improvements have been measured by adjuasting the [ARM64](https://go.dev/wiki/MinimumRequirements#arm64)
+improvements have been measured by adjusting the [ARM64](https://go.dev/wiki/MinimumRequirements#arm64)
 defaults.
 
 ### Further documentation
