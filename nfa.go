@@ -100,6 +100,7 @@ type nfaBuffers struct {
 	transmap       *transmap
 	fieldSet       map[*fieldMatcher]bool
 	qNumBuf        [MaxBytesInEncoding]byte
+	lazyDFACaches  map[*faState]*lazyDFA // per-goroutine lazy DFA caches, keyed by start state
 }
 
 func newNfaBuffers() *nfaBuffers {
@@ -142,6 +143,38 @@ func (nb *nfaBuffers) getFieldSet() map[*fieldMatcher]bool {
 		nb.fieldSet = make(map[*fieldMatcher]bool)
 	}
 	return nb.fieldSet
+}
+
+// getLazyDFA returns the per-goroutine lazy DFA cache for the given start
+// state, creating it on first use. No synchronization needed: nfaBuffers is
+// per-goroutine. Keyed by the start *faState, whose identity is stable.
+func (nb *nfaBuffers) getLazyDFA(start *faState) *lazyDFA {
+	if nb.lazyDFACaches == nil {
+		nb.lazyDFACaches = make(map[*faState]*lazyDFA)
+	}
+	ld, ok := nb.lazyDFACaches[start]
+	if !ok {
+		ld = newLazyDFA()
+		nb.lazyDFACaches[start] = ld
+	}
+	return ld
+}
+
+// lazyDFAStats aggregates stats across all lazy DFA caches. Test/analysis only.
+func (nb *nfaBuffers) lazyDFAStats() (cacheCount, totalStates, totalCreates, totalHits, totalMisses, totalCacheBytes int) {
+	if nb.lazyDFACaches == nil {
+		return 0, 0, 0, 0, 0, 0
+	}
+	cacheCount = len(nb.lazyDFACaches)
+	for _, ld := range nb.lazyDFACaches {
+		states, creates, hits, misses, cacheBytes := ld.stats()
+		totalStates += states
+		totalCreates += creates
+		totalHits += hits
+		totalMisses += misses
+		totalCacheBytes += cacheBytes
+	}
+	return
 }
 
 // nfa2Dfa does what the name says. It relies upon epsilonClosure having been run on the start state
