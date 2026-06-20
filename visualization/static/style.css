@@ -71,6 +71,31 @@ header h1 {
   height: 100% !important;
 }
 
+/* Loading overlay (shown until the cloud is built) */
+#loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  z-index: 10;
+  pointer-events: none;
+}
+#loading.hidden { display: none; }
+.spinner {
+  width: 46px;
+  height: 46px;
+  border: 4px solid #2d3148;
+  border-top-color: #7c3aed;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ===== Side panel ===== */
 .panel {
   width: 280px;

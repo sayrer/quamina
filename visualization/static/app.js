@@ -41,11 +41,14 @@ async function init() {
   const words = await wordsRes.json();
 
   renderChips(words);
-  buildScene();
+  await buildScene();
+
+  // Scene is built and first-rendered — drop the spinner.
+  document.getElementById("loading").classList.add("hidden");
 }
 
 // ===== 3D scene =====
-function buildScene() {
+async function buildScene() {
   const container = document.getElementById("graph");
   const w = container.clientWidth  || 800;
   const h = container.clientHeight || 600;
@@ -67,8 +70,8 @@ function buildScene() {
   controls.enableDamping = false;
   controls.addEventListener("change", renderFrame);
 
-  // Compute layout once, freeze it
-  computeLayout();
+  // Compute layout once, freeze it (async: yields so the spinner animates)
+  await computeLayout();
 
   // Build geometry from frozen positions
   buildPointCloud();
@@ -102,7 +105,7 @@ function buildScene() {
 }
 
 // ===== Layout: compute once, never animate =====
-function computeLayout() {
+async function computeLayout() {
   if (!nfaData || !nfaData.nodes || !nfaData.nodes.length) return;
 
   const N = nfaData.nodes.length;
@@ -138,7 +141,12 @@ function computeLayout() {
     .force("link", forceLink(links).id(d => d.id).distance(70).strength(0.12))
     .force("collide", forceCollide(8))
     .stop();
-  for (let i = 0; i < 160; i++) sim.tick();
+  // Tick in chunks, yielding to the browser between chunks so the loading
+  // spinner keeps animating instead of freezing during a long blocking loop.
+  for (let i = 0; i < 160; i++) {
+    sim.tick();
+    if ((i & 15) === 15) await new Promise(r => requestAnimationFrame(r));
+  }
 
   // Sanitize any non-finite coordinate, then recenter on the finite centroid.
   let cx = 0, cy = 0, cz = 0, m = 0;
@@ -461,4 +469,8 @@ document.getElementById("word-input").addEventListener("keydown", e => {
   if (e.key === "Enter") feedWord(e.target.value);
 });
 
-init();
+init().catch(err => {
+  console.error("init failed:", err);
+  const t = document.querySelector("#loading .loading-text");
+  if (t) t.textContent = "Failed to load — see console.";
+});
