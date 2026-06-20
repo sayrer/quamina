@@ -104,22 +104,67 @@ func TestEagerInfeasibleLazyTractable(t *testing.T) {
 }
 
 // BenchmarkGiantPatternsRepetitiveEvents matches a repetitive event stream
-// against the giant (eager-infeasible) pattern set two ways:
+// against the giant (eager-infeasible) pattern set. The eager DFA can't be
+// benchmarked because it is infeasible to build (see the test above), so the
+// comparison is the NFA — the only other way to match a nondeterministic FA.
 //
-//   - warm:  the lazy DFA cache persists across events, so the recurring values
-//            hit cached transitions — near-DFA throughput.
-//   - cold:  the cache is cleared before every event, so each one re-materializes
-//            its state-sets from the NFA — the cost you'd pay WITHOUT the cache.
+// Sub-benchmarks:
+//   - nfa:     traverseNFA re-walks the giant NFA's active-state set on every
+//              event (no caching) — the baseline.
+//   - lazyDFA: traverseLazyDFA on a warm cache, so the recurring values hit
+//              cached transitions — near-DFA throughput.
+//   - full_path_warm: the same recurring stream through the real MatchesForEvent
+//              path (flatten + lazy match), for an end-to-end number.
 //
-// The eager DFA is not benchmarked because it is infeasible to build (see
-// TestEagerInfeasibleLazyTractable). Both sub-benchmarks run the full, real
-// MatchesForEvent path so the only difference is lazy-cache reuse.
+// The nfa/lazyDFA arms drive the traversal directly on the same start state and
+// the same (quoted, as the flattener stores them) values, so they are
+// apples-to-apples — the differential test proves the two return identical
+// results, here we just time them.
 func BenchmarkGiantPatternsRepetitiveEvents(b *testing.B) {
-	q, _ := buildGiantMatcher(b, 400)
-	pool := recurringEvents(b, 400, 4)
+	q, start := buildGiantMatcher(b, 400)
+	words := readWWords(b, 400)
 
-	b.Run("warm_repetitive_cached", func(b *testing.B) {
-		for _, ev := range pool { // warm the cache
+	// Quoted field VALUES for direct traversal (the flattener stores string
+	// values with their surrounding quotes).
+	vals := make([][]byte, 4)
+	for i := range vals {
+		vals[i] = []byte(`"` + string(words[i*len(words)/len(vals)]) + `"`)
+	}
+	bufs := newNfaBuffers()
+
+	traverseLoop := func(b *testing.B, fn func(val []byte)) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		i := 0
+		for b.Loop() {
+			tm := bufs.getTransmap()
+			tm.push()
+			fn(vals[i%len(vals)])
+			tm.pop()
+			bufs.getTransmap().resetDepth()
+			i++
+		}
+	}
+
+	b.Run("nfa", func(b *testing.B) {
+		traverseLoop(b, func(val []byte) { traverseNFA(start, val, nil, bufs) })
+	})
+
+	b.Run("lazyDFA", func(b *testing.B) {
+		ld := bufs.getLazyDFA(start)
+		for _, val := range vals { // warm the cache
+			tm := bufs.getTransmap()
+			tm.push()
+			traverseLazyDFA(start, val, nil, ld, bufs)
+			tm.pop()
+			bufs.getTransmap().resetDepth()
+		}
+		traverseLoop(b, func(val []byte) { traverseLazyDFA(start, val, nil, ld, bufs) })
+	})
+
+	b.Run("full_path_warm", func(b *testing.B) {
+		events := recurringEvents(b, 400, 4)
+		for _, ev := range events { // warm
 			if _, err := q.MatchesForEvent(ev); err != nil {
 				b.Fatal(err)
 			}
@@ -128,20 +173,7 @@ func BenchmarkGiantPatternsRepetitiveEvents(b *testing.B) {
 		b.ResetTimer()
 		i := 0
 		for b.Loop() {
-			if _, err := q.MatchesForEvent(pool[i%len(pool)]); err != nil {
-				b.Fatal(err)
-			}
-			i++
-		}
-	})
-
-	b.Run("cold_no_cache_reuse", func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-		i := 0
-		for b.Loop() {
-			clear(q.bufs.lazyDFACaches) // force a cold re-materialization each event
-			if _, err := q.MatchesForEvent(pool[i%len(pool)]); err != nil {
+			if _, err := q.MatchesForEvent(events[i%len(events)]); err != nil {
 				b.Fatal(err)
 			}
 			i++
