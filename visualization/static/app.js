@@ -77,11 +77,22 @@ function buildScene() {
   // Frame the camera on the cloud so it fills the view.
   fitCamera();
 
-  // One initial render
-  renderFrame();
+  // Warm-up renders. A single on-demand frame can land before the WebGL canvas
+  // is sized/ready on a cold first load — the frame is lost and, with no
+  // animation loop, the page stays blank until you interact (a refresh "fixes"
+  // it). Render a few frames over the first moments, correcting the canvas size
+  // once layout settles, then go fully on-demand (static).
+  let warm = 0;
+  (function warmup() {
+    onResize();
+    if (warm++ < 20) requestAnimationFrame(warmup);
+  })();
 
-  // Resize handling
+  // Resize handling. The ResizeObserver also fires the moment #graph first gets
+  // a size — the same trigger as opening devtools — guaranteeing a good first
+  // frame even if the initial render ran before the canvas was ready.
   window.addEventListener("resize", onResize);
+  new ResizeObserver(onResize).observe(document.getElementById("graph"));
 
   // ε-edge toggle
   document.getElementById("show-eps").addEventListener("change", e => {
@@ -351,6 +362,7 @@ function onResize() {
   const container = document.getElementById("graph");
   const w = container.clientWidth;
   const h = container.clientHeight;
+  if (w === 0 || h === 0) return; // container not laid out yet — skip
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
