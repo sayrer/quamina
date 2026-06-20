@@ -95,8 +95,6 @@ func TestLazyDFAvsNFADirect(t *testing.T) {
 		if !sameFieldMatcherSet(lazy, nfa) {
 			t.Fatalf("lazy vs NFA divergence on %q: %d vs %d transitions", string(w), len(lazy), len(nfa))
 		}
-		// reset transmap depth between iterations
-		bufs.getTransmap().resetDepth()
 	}
 }
 

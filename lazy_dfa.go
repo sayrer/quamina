@@ -148,8 +148,8 @@ func (ld *lazyDFA) populateScratchState(nextNFAStates []*faState, writeIdx int) 
 func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	keyBytes := ld.computeKey(nfaStates)
 
-	// Lookup using []byte — the compiler optimizes string(keyBytes) in map
-	// index expressions to avoid allocation (see Go spec, composite literals).
+	// Lookup using []byte — the Go compiler optimizes string(keyBytes) in map
+	// index expressions to avoid the allocation.
 	if state, exists := ld.cache[string(keyBytes)]; exists {
 		return state
 	}

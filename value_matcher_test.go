@@ -546,7 +546,7 @@ func TestEpsilonClosureRequired(t *testing.T) {
 	// closure, which self-processing of the splice state cannot replace.
 	clearEpsilonClosures(vm.fields().start, make(map[*faState]bool))
 	// the lazy DFA cache must be refreshed after an in-place NFA mutation
-	// (production always gets a fresh start identity via mergeFAStates; this
+	// (production always gets a fresh start identity via a fresh vmFields.start allocation on every pattern merge; this
 	// artificial in-place clear does not)
 	bufs = newNfaBuffers()
 	if got := len(testTransitionOn(vm, []byte("az"), bufs)); got != 0 {
@@ -556,7 +556,7 @@ func TestEpsilonClosureRequired(t *testing.T) {
 	// Restore closures; matching works again.
 	epsilonClosure(vm.fields().start)
 	// the lazy DFA cache must be refreshed after an in-place NFA mutation
-	// (production always gets a fresh start identity via mergeFAStates; this
+	// (production always gets a fresh start identity via a fresh vmFields.start allocation on every pattern merge; this
 	// artificial in-place clear does not)
 	bufs = newNfaBuffers()
 	if got := len(testTransitionOn(vm, []byte("az"), bufs)); got != 2 {

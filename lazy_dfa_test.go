@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-func TestLazyDFACacheLimit(t *testing.T) {
-	// Create a pattern that could cause state explosion
-	// Multiple wildcards create many possible state combinations
+func TestLazyDFAMultiWildcardMatches(t *testing.T) {
+	// Correctness test: a single pattern with multiple wildcards matches all expected inputs.
 	q, err := New()
 	if err != nil {
 		t.Fatal(err)
@@ -41,10 +40,9 @@ func TestLazyDFACacheLimit(t *testing.T) {
 	}
 }
 
-func TestLazyDFAFallbackToNFA(t *testing.T) {
-	// Test that we gracefully fall back to NFA when cache limit is hit
-	// This is hard to test directly without exposing internals,
-	// but we can at least verify correctness with complex patterns
+func TestLazyDFAMultiPatternMatches(t *testing.T) {
+	// Correctness test: multiple patterns each match their expected inputs.
+	// (Cache-limit / fallback coverage lives in lazy_dfa_stats_test.go.)
 
 	q, err := New()
 	if err != nil {
