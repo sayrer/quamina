@@ -236,6 +236,72 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 	return ld.populateScratchState(nextNFAStates, writeIdx)
 }
 
+// traverseLazyDFA traverses an NFA from start using lazy DFA construction,
+// materializing and caching DFA states on demand. Match semantics are identical
+// to traverseNFA; only the state representation differs. Follows main's transmap
+// contract: the caller (tryToMatch) has already push()ed a transmap level, and
+// dedup happens via bufs.fieldSet — this function never push()/pop()s.
+func traverseLazyDFA(start *faState, val []byte, transitions []*fieldMatcher, ld *lazyDFA, bufs *nfaBuffers) []*fieldMatcher {
+	// Get or create the start lazyDFAState (cached on the lazyDFA for the hot path).
+	currentState := ld.startState
+	if currentState == nil {
+		startStates := start.epsilonClosure
+		if len(startStates) == 0 {
+			// self-only sentinel: the start closure is {start}.
+			writeIdx := 1 - ld.scratchNFAIdx
+			ld.scratchNFA[writeIdx] = append(ld.scratchNFA[writeIdx][:0], start)
+			startStates = ld.scratchNFA[writeIdx]
+		}
+		currentState = ld.getOrCreateState(startStates)
+		if currentState == nil {
+			// Cache full at start — use a scratch state to avoid allocation.
+			writeIdx := 1 - ld.scratchNFAIdx
+			ld.scratchNFA[writeIdx] = append(ld.scratchNFA[writeIdx][:0], startStates...)
+			currentState = ld.populateScratchState(ld.scratchNFA[writeIdx], writeIdx)
+		} else {
+			ld.startState = currentState // cache for next time
+		}
+	}
+
+	// Dedup transitions via the flat fieldSet, matching traverseNFA.
+	fieldSet := bufs.getFieldSet()
+	clear(fieldSet)
+	for _, fm := range transitions {
+		fieldSet[fm] = true
+	}
+	for _, fm := range currentState.fieldTransitions {
+		fieldSet[fm] = true
+	}
+
+	for index := 0; index <= len(val); index++ {
+		var utf8Byte byte
+		if index < len(val) {
+			utf8Byte = val[index]
+		} else {
+			utf8Byte = valueTerminator
+		}
+		nextState := ld.step(currentState, utf8Byte)
+		if nextState == nil {
+			break
+		}
+		for _, fm := range nextState.fieldTransitions {
+			fieldSet[fm] = true
+		}
+		currentState = nextState
+	}
+
+	if len(fieldSet) == 0 {
+		return nil
+	}
+	tm := bufs.getTransmap()
+	buf := tm.levels[tm.depth] // already [:0] from the caller's push()
+	for fm := range fieldSet {
+		buf = append(buf, fm)
+	}
+	tm.levels[tm.depth] = buf
+	return buf
+}
+
 // computeKey builds a cache key from a set of NFA states into ld.keyBuf,
 // reusing scratch buffers to avoid allocation. The returned slice is only
 // valid until the next computeKey call.
