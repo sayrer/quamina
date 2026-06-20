@@ -7,7 +7,7 @@ import {
   forceSimulation,
   forceManyBody,
   forceLink,
-  forceCenter,
+  forceCollide,
 } from "d3-force-3d";
 
 // ===== State =====
@@ -109,17 +109,24 @@ function computeLayout() {
     };
   });
 
-  // Links for d3-force-3d (needs source/target ids).
-  const links = (nfaData.edges || []).map(e => ({ source: e.from, target: e.to }));
+  // Lay out using BYTE edges only. The epsilon edges (splice/spinner plumbing,
+  // hidden by default) are a dense interlinked mesh that collapses the layout
+  // into a clump; the byte-transition graph is trie-like and spreads cleanly.
+  const links = (nfaData.edges || [])
+    .filter(e => e.kind === "byte")
+    .map(e => ({ source: e.from, target: e.to }));
 
-  // Gentler, bounded forces; no forceCenter (recenter manually below). distanceMax
-  // bounds the charge so positions can't blow up to Infinity/NaN over many ticks.
-  const sim = forceSimulation(nodes)
-    .numDimensions(3)
-    .force("charge", forceManyBody().strength(-40).distanceMax(500))
-    .force("link", forceLink(links).id(d => d.id).distance(45).strength(0.25))
+  // Pass dimensions to the constructor so forceManyBody/forceLink initialize in
+  // 3D (chaining .numDimensions() after construction does not reliably reach
+  // the forces, which collapses the layout to a plane). Strong charge inflates
+  // the dense, near-planar link graph into a real 3D cloud; distanceMax bounds
+  // it so positions can't blow up to Infinity/NaN over many ticks.
+  const sim = forceSimulation(nodes, 3)
+    .force("charge", forceManyBody().strength(-110).distanceMax(1600))
+    .force("link", forceLink(links).id(d => d.id).distance(70).strength(0.12))
+    .force("collide", forceCollide(8))
     .stop();
-  for (let i = 0; i < 200; i++) sim.tick();
+  for (let i = 0; i < 160; i++) sim.tick();
 
   // Sanitize any non-finite coordinate, then recenter on the finite centroid.
   let cx = 0, cy = 0, cz = 0, m = 0;
@@ -248,7 +255,9 @@ function fitCamera() {
   controls.target.copy(s.center);
   const fov = (camera.fov * Math.PI) / 180;
   const dist = (s.radius / Math.sin(fov / 2)) * 1.25;
-  camera.position.set(s.center.x, s.center.y, s.center.z + dist);
+  // Oblique angle so the 3D depth reads at a glance (not a face-on plane).
+  const dir = new THREE.Vector3(0.8, 0.5, 1).normalize();
+  camera.position.copy(s.center).addScaledVector(dir, dist);
   camera.near = Math.max(0.1, dist / 1000);
   camera.far = dist * 1000;
   camera.updateProjectionMatrix();
