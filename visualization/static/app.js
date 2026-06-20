@@ -360,14 +360,7 @@ function onResize() {
 // ===== Chip rendering =====
 function renderChips(words) {
   const container = document.getElementById("chips");
-  // With many words, show an evenly-spread sample as quick presets (the text
-  // input still accepts any word).
-  let sample = words;
-  if (words.length > 30) {
-    sample = [];
-    for (let i = 0; i < 24; i++) sample.push(words[Math.floor((i * words.length) / 24)]);
-  }
-  sample.forEach(w => {
+  words.forEach(w => {
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.textContent = w;
