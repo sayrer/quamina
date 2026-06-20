@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quamina NFA / Lazy-DFA Visualizer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Quamina NFA / Lazy-DFA Visualizer</h1>
+    <div class="legend">
+      <span class="legend-item">
+        <span class="swatch nfa"></span> NFA byte edge
+      </span>
+      <span class="legend-item">
+        <span class="swatch eps"></span> ε epsilon edge
+      </span>
+      <span class="legend-item">
+        <span class="swatch active"></span> materialized into DFA (cumulative)
+      </span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Force-directed NFA graph -->
+    <div id="graph">
+      <svg></svg>
+    </div>
+
+    <!-- Side panel -->
+    <aside class="panel">
+
+      <!-- Feed controls -->
+      <div class="panel-section">
+        <h2>Feed a word</h2>
+        <div class="feed-row">
+          <input id="word-input" type="text" placeholder="type a word…" autocomplete="off" />
+          <button id="feed-btn">Feed</button>
+        </div>
+        <div class="chips" id="chips"></div>
+      </div>
+
+      <!-- Matches -->
+      <div class="panel-section">
+        <h2>Matches</h2>
+        <div id="matches"><p class="no-match">Feed a word to see matches.</p></div>
+      </div>
+
+      <!-- Stats -->
+      <div class="panel-section">
+        <h2>Cache stats</h2>
+        <div class="stats-grid" id="stats-grid">
+          <!-- populated by JS -->
+        </div>
+      </div>
+
+      <!-- DFA States -->
+      <div class="panel-section">
+        <h2>DFA states (cumulative)</h2>
+        <div id="dfa-states"><p class="no-match">No DFA states yet.</p></div>
+      </div>
+
+    </aside>
+  </div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

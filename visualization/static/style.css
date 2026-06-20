@@ -1,0 +1,258 @@
+/* ===== Reset & base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0f1117;
+  color: #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== Header ===== */
+header {
+  padding: 10px 16px;
+  background: #1a1d27;
+  border-bottom: 1px solid #2d3148;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+header h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #a5b4fc;
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.swatch {
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+}
+.swatch.nfa    { background: #8b1414; }
+.swatch.active { background: #d97706; }
+.swatch.eps    { background: #64748b; border: none; }
+
+/* ===== Main layout ===== */
+.layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ===== Graph panel ===== */
+#graph {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+#graph svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* SVG elements */
+.node circle {
+  stroke-width: 2;
+  cursor: pointer;
+}
+.node.normal circle {
+  fill: #1e2130;
+  stroke: #7f1d1d; /* dark red NFA */
+}
+.node.accept circle.outer {
+  fill: none;
+  stroke: #7f1d1d;
+}
+.node.accept circle.inner {
+  fill: #1e2130;
+  stroke: #7f1d1d;
+}
+.node.epsilon-only circle {
+  opacity: 0.55;
+}
+
+/* Active (materialized into DFA) */
+.node.active circle,
+.node.active circle.inner {
+  fill: #78350f;
+  stroke: #d97706;
+}
+.node.active circle.outer {
+  fill: none;
+  stroke: #d97706;
+}
+
+.link {
+  fill: none;
+  stroke-width: 1.5;
+}
+.link.byte    { stroke: #991b1b; }
+.link.epsilon { stroke: #475569; stroke-dasharray: 5,3; }
+.link.active  { stroke: #d97706; stroke-width: 2.5; }
+
+.edge-label {
+  fill: #94a3b8;
+  font-size: 9px;
+  pointer-events: none;
+}
+.edge-label.byte    { fill: #fca5a5; }
+.edge-label.epsilon { fill: #64748b; }
+.edge-label.active  { fill: #fcd34d; }
+
+.node-label {
+  fill: #cbd5e1;
+  font-size: 9px;
+  pointer-events: none;
+}
+.node.active .node-label { fill: #fef3c7; }
+
+/* ===== Side panel ===== */
+.panel {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1a1d27;
+  border-left: 1px solid #2d3148;
+  overflow-y: auto;
+}
+
+.panel-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid #2d3148;
+}
+.panel-section h2 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #7c3aed;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Feed controls */
+.feed-row {
+  display: flex;
+  gap: 6px;
+}
+#word-input {
+  flex: 1;
+  background: #0f1117;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  outline: none;
+}
+#word-input:focus { border-color: #7c3aed; }
+#feed-btn {
+  background: #7c3aed;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  color: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+#feed-btn:hover { background: #6d28d9; }
+
+/* Word chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+.chip {
+  background: #1e2130;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 3px 9px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  color: #94a3b8;
+  transition: background 0.15s, color 0.15s;
+}
+.chip:hover   { background: #2d3148; color: #e2e8f0; }
+.chip.matched { border-color: #d97706; color: #fcd34d; }
+
+/* Stats */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.stat-box {
+  background: #0f1117;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.stat-label {
+  font-size: 0.65rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #a5b4fc;
+}
+
+/* Matches */
+.match-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.match-list li {
+  background: #14532d;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 0.8rem;
+  color: #86efac;
+}
+.no-match {
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+/* DFA states */
+.dfa-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.dfa-item {
+  background: #0f1117;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+.dfa-item.start {
+  border-left: 3px solid #d97706;
+  color: #fcd34d;
+}
+.dfa-item .nfa-nodes {
+  color: #64748b;
+  font-size: 0.68rem;
+}
