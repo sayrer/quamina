@@ -25,6 +25,7 @@ let nodePositions = [];     // [{x,y,z}] indexed by position in nfaData.nodes
 let nodeIndexById = {};
 
 // Colors (as THREE.Color components)
+const POINT_SIZE = 4; // screen pixels (~3x the 1px lines)
 const C_NORMAL  = new THREE.Color("#64748b"); // slate
 const C_ACCEPT  = new THREE.Color("#2dd4bf"); // teal
 const C_EPS     = new THREE.Color("#334155"); // dim
@@ -152,7 +153,6 @@ function buildPointCloud() {
   const n = nfaData.nodes.length;
   const positions = new Float32Array(n * 3);
   const colors    = new Float32Array(n * 3);
-  const sizes     = new Float32Array(n);
 
   nfaData.nodes.forEach((node, i) => {
     const p = nodePositions[i];
@@ -160,17 +160,7 @@ function buildPointCloud() {
     positions[i * 3 + 1] = p.y;
     positions[i * 3 + 2] = p.z;
 
-    let c;
-    if (node.accept) {
-      c = C_ACCEPT;
-      sizes[i] = 10;
-    } else if (node.epsilonOnly) {
-      c = C_EPS;
-      sizes[i] = 5;
-    } else {
-      c = C_NORMAL;
-      sizes[i] = 8;
-    }
+    const c = node.accept ? C_ACCEPT : node.epsilonOnly ? C_EPS : C_NORMAL;
     colors[i * 3]     = c.r;
     colors[i * 3 + 1] = c.g;
     colors[i * 3 + 2] = c.b;
@@ -179,12 +169,28 @@ function buildPointCloud() {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geo.setAttribute("color",    new THREE.BufferAttribute(colors,    3));
-  geo.setAttribute("size",     new THREE.BufferAttribute(sizes,     1));
 
-  const mat = new THREE.PointsMaterial({
-    vertexColors: true,
-    sizeAttenuation: true,
-    size: 8,
+  // Little round dots at a fixed screen size (~3x the 1px lines). A shader draws
+  // a crisp circle by discarding fragments outside radius 0.5 of the point
+  // sprite — clean at any size, unlike a minified circle texture.
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uSize: { value: POINT_SIZE * renderer.getPixelRatio() } },
+    vertexShader: `
+      attribute vec3 color;
+      varying vec3 vColor;
+      uniform float uSize;
+      void main() {
+        vColor = color;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = uSize;
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        if (dot(d, d) > 0.25) discard;
+        gl_FragColor = vec4(vColor, 1.0);
+      }`,
   });
 
   pointsObj = new THREE.Points(geo, mat);
