@@ -180,3 +180,81 @@ func BenchmarkGiantPatternsRepetitiveEvents(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkEagerVsLazyVsNFA puts all three matchers side by side on a set SMALL
+// enough that the eager DFA can still be built. quamina's shellstyle DFA
+// explodes fast — 6 "*word*" substring rules already determinize to ~1,200
+// states (8 rules exceed 20,000), well past quamina's default eager budget
+// (maxEagerDFAStates), which is why it would normally use the lazy DFA here. We
+// force-build the eager DFA with a bigger budget purely to time it. Measured
+// (M1 Ultra): eager ~74 ns, lazy ~151 ns, nfa ~389 ns — the lazy DFA is the same
+// order as the eager DFA (here ~2x) without building the full DFA, and far ahead
+// of the NFA. Per BenchmarkGiantPatternsRepetitiveEvents above, the lazy DFA
+// keeps that near-DFA speed at scales where the eager DFA can't be built at all.
+func BenchmarkEagerVsLazyVsNFA(b *testing.B) {
+	const n = 6
+	words := readWWords(b, n)
+	q, _ := New()
+	for i, w := range words {
+		p := fmt.Sprintf(`{"msg": [ {"shellstyle": "*%s*"} ] }`, string(w))
+		if err := q.AddPattern(fmt.Sprintf("p%d", i), p); err != nil {
+			b.Fatal(err)
+		}
+	}
+	nfaStart := q.matcher.(*coreMatcher).fields().state.fields().transitions["msg"].fields().start
+
+	const eagerBudget = 5000 // bigger than quamina's default maxEagerDFAStates
+	eagerStart := nfa2DfaWithBudget(nfaStart, eagerBudget)
+	if eagerStart == nil {
+		b.Fatalf("eager DFA exceeded the %d-state budget at n=%d; reduce n", eagerBudget, n)
+	}
+
+	vals := make([][]byte, n)
+	for i, w := range words {
+		vals[i] = []byte(`"` + string(w) + `"`) // quoted field value
+	}
+	bufs := newNfaBuffers()
+	dfaTrans := make([]*fieldMatcher, 0, 16) // reusable, so the eager arm is alloc-free too
+
+	timed := func(b *testing.B, fn func(val []byte)) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		i := 0
+		for b.Loop() {
+			fn(vals[i%len(vals)])
+			i++
+		}
+	}
+
+	b.Run("eager", func(b *testing.B) {
+		timed(b, func(val []byte) { traverseDFA(eagerStart, val, dfaTrans[:0]) })
+	})
+
+	b.Run("nfa", func(b *testing.B) {
+		timed(b, func(val []byte) {
+			tm := bufs.getTransmap()
+			tm.push()
+			traverseNFA(nfaStart, val, nil, bufs)
+			tm.pop()
+			bufs.getTransmap().resetDepth()
+		})
+	})
+
+	b.Run("lazyDFA", func(b *testing.B) {
+		ld := bufs.getLazyDFA(nfaStart)
+		for _, val := range vals { // warm the cache
+			tm := bufs.getTransmap()
+			tm.push()
+			traverseLazyDFA(nfaStart, val, nil, ld, bufs)
+			tm.pop()
+			bufs.getTransmap().resetDepth()
+		}
+		timed(b, func(val []byte) {
+			tm := bufs.getTransmap()
+			tm.push()
+			traverseLazyDFA(nfaStart, val, nil, ld, bufs)
+			tm.pop()
+			bufs.getTransmap().resetDepth()
+		})
+	})
+}
