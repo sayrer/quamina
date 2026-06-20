@@ -32,6 +32,7 @@ type vmFields struct {
 	dfaStart            *faState // eagerly-converted DFA when within budget; nil = use lazy
 	singletonMatch      []byte
 	singletonTransition *fieldMatcher
+	shellFastMatchers   []*shellFastMatcher // fast path for pure shell-style patterns (single pattern)
 	hasNumbers          bool
 	isNondeterministic  bool
 	eagerDFAFailed      bool // true once eager conversion exceeded budget; skip future attempts
@@ -62,6 +63,18 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 	transitions := bufs.transitionsBuf[:0]
 
 	val := eventField.Val
+
+	// Fast path: check shell fast matchers first (SIMD-optimized bytes.Index).
+	// val includes surrounding quotes; strip them before matching.
+	if len(vmFields.shellFastMatchers) > 0 && len(val) >= 2 {
+		unquoted := val[1 : len(val)-1]
+		for _, sfm := range vmFields.shellFastMatchers {
+			if sfm.match(unquoted) {
+				transitions = append(transitions, sfm.nextField)
+			}
+		}
+	}
+
 	switch {
 	case vmFields.singletonMatch != nil:
 		// if there's a singleton entry here, we either match the val or we're
@@ -162,6 +175,31 @@ func (m *valueMatcher) addTransition(val typedVal, printer printer, bufs *closur
 	case anythingButType:
 		newFA, nextField = makeMultiAnythingButFA(val.list)
 	case shellStyleType:
+		// Fast-path: if this is the very first shellstyle pattern and no NFA or singleton
+		// exists yet, create a shellFastMatcher instead of building an NFA.
+		if fields.start == nil && fields.singletonMatch == nil && len(fields.shellFastMatchers) == 0 {
+			nextField = newFieldMatcher()
+			if sfm := newShellFastMatcher(valBytes, nextField); sfm != nil {
+				fields.shellFastMatchers = append(fields.shellFastMatchers, sfm)
+				m.update(fields)
+				return nextField
+			}
+		}
+		// Migrate any existing fast matchers to NFA before adding this new pattern.
+		if len(fields.shellFastMatchers) > 0 {
+			for _, sfm := range fields.shellFastMatchers {
+				fa, _ := makeShellStyleFAWithTransition(sfm.pattern, sfm.nextField, printer)
+				if fields.start == nil {
+					fields.start = fa
+				} else {
+					fields.start = mergeStartStates(fields.start, fa, printer)
+				}
+			}
+			fields.shellFastMatchers = nil
+			fields.isNondeterministic = true
+			epsilonClosureInto(fields.start, bufs)
+		}
+		// Add this new shellstyle pattern to the NFA.
 		newFA, nextField = makeShellStyleFA(valBytes, printer)
 		fields.isNondeterministic = true
 	case wildcardType:
