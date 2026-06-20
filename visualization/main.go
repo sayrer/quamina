@@ -29,7 +29,7 @@ type feedRequest struct {
 }
 
 func main() {
-	wordsN := flag.Int("words", 12, "number of words to load from testdata/wwords.txt")
+	wordsN := flag.Int("words", 500, "number of words to sample (evenly across the alphabet) from testdata/wwords.txt")
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
@@ -69,7 +69,10 @@ func main() {
 	}
 }
 
-// loadWords reads up to n words from path (one word per line).
+// loadWords reads the word list at path (one word per line) and returns n words
+// sampled EVENLY across the whole (alphabetically-sorted) list, so the starting
+// letters span the alphabet rather than all being "aa…". With fewer than n
+// words available it returns them all.
 func loadWords(path string, n int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -77,14 +80,26 @@ func loadWords(path string, n int) ([]string, error) {
 	}
 	defer f.Close()
 
-	var words []string
+	var all []string
 	sc := bufio.NewScanner(f)
-	for sc.Scan() && len(words) < n {
+	for sc.Scan() {
 		if w := sc.Text(); w != "" {
-			words = append(words, w)
+			all = append(all, w)
 		}
 	}
-	return words, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if n <= 0 || n >= len(all) {
+		return all, nil
+	}
+	// Stride-sample: index i*len/n spreads the picks uniformly across the list,
+	// which (the list being alphabetical) spreads them across starting letters.
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = all[i*len(all)/n]
+	}
+	return out, nil
 }
 
 // handleNFA serves GET /api/nfa.
