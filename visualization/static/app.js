@@ -55,7 +55,8 @@ function renderGraph() {
   if (!nfaData) return;
 
   const nodes = nfaData.nodes.map(n => ({ ...n }));
-  const edges = nfaData.edges.map(e => ({ ...e }));
+  // d3.forceLink needs `source`/`target`; the export emits `from`/`to`.
+  const edges = nfaData.edges.map(e => ({ ...e, source: e.from, target: e.to }));
 
   // Build node-index lookup
   const nodeById = {};
