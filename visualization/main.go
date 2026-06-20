@@ -1,5 +1,6 @@
 // Package main is the visualization server for Quamina's NFA / lazy-DFA demo.
-// Run: go run ./visualization -words 12 -addr :8080
+// Run: go run ./visualization          (defaults to 500 words; -addr :8080)
+//      go run ./visualization -words 1000 -addr :8080   (more patterns)
 package main
 
 import (
