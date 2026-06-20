@@ -73,6 +73,9 @@ function buildScene() {
   buildPointCloud();
   buildEdgeLines();
 
+  // Frame the camera on the cloud so it fills the view.
+  fitCamera();
+
   // One initial render
   renderFrame();
 
@@ -90,29 +93,50 @@ function buildScene() {
 function computeLayout() {
   if (!nfaData || !nfaData.nodes || !nfaData.nodes.length) return;
 
-  const nodes = nfaData.nodes.map(n => ({ id: n.id }));
+  const N = nfaData.nodes.length;
+  // Seed every node at a DISTINCT, finite position on a Fibonacci sphere so the
+  // force sim never starts from coincident points (a common NaN source).
+  const R0 = 220;
+  const golden = Math.PI * (1 + Math.sqrt(5));
+  const nodes = nfaData.nodes.map((n, i) => {
+    const phi = Math.acos(1 - 2 * (i + 0.5) / N);
+    const theta = golden * i;
+    return {
+      id: n.id,
+      x: R0 * Math.sin(phi) * Math.cos(theta),
+      y: R0 * Math.sin(phi) * Math.sin(theta),
+      z: R0 * Math.cos(phi),
+    };
+  });
 
-  // Build link objects for d3-force-3d (needs source/target)
-  const links = (nfaData.edges || []).map(e => ({
-    source: e.from,
-    target: e.to,
-  }));
+  // Links for d3-force-3d (needs source/target ids).
+  const links = (nfaData.edges || []).map(e => ({ source: e.from, target: e.to }));
 
+  // Gentler, bounded forces; no forceCenter (recenter manually below). distanceMax
+  // bounds the charge so positions can't blow up to Infinity/NaN over many ticks.
   const sim = forceSimulation(nodes)
     .numDimensions(3)
-    .force("charge", forceManyBody().strength(-180))
-    .force("link", forceLink(links).id(d => d.id).distance(80).strength(0.4))
-    .force("center", forceCenter(0, 0, 0))
-    .stop(); // never auto-run
+    .force("charge", forceManyBody().strength(-40).distanceMax(500))
+    .force("link", forceLink(links).id(d => d.id).distance(45).strength(0.25))
+    .stop();
+  for (let i = 0; i < 200; i++) sim.tick();
 
-  // Converge synchronously — 300 ticks, no rendering between them
-  for (let i = 0; i < 300; i++) sim.tick();
+  // Sanitize any non-finite coordinate, then recenter on the finite centroid.
+  let cx = 0, cy = 0, cz = 0, m = 0;
+  for (const n of nodes) {
+    if (Number.isFinite(n.x) && Number.isFinite(n.y) && Number.isFinite(n.z)) {
+      cx += n.x; cy += n.y; cz += n.z; m++;
+    }
+  }
+  if (m > 0) { cx /= m; cy /= m; cz /= m; }
 
-  // Snapshot final positions; build index map
   nodeIndexById = {};
   nodePositions = nodes.map((n, idx) => {
     nodeIndexById[n.id] = idx;
-    return { x: n.x, y: n.y, z: n.z };
+    const x = Number.isFinite(n.x) ? n.x - cx : 0;
+    const y = Number.isFinite(n.y) ? n.y - cy : 0;
+    const z = Number.isFinite(n.z) ? n.z - cz : 0;
+    return { x, y, z };
   });
 }
 
@@ -213,6 +237,22 @@ function makeLineSegments(edges, colorHex, opacity) {
   });
 
   return new THREE.LineSegments(geo, mat);
+}
+
+// Frame the camera to fit the whole point cloud.
+function fitCamera() {
+  if (!pointsObj) return;
+  pointsObj.geometry.computeBoundingSphere();
+  const s = pointsObj.geometry.boundingSphere;
+  if (!s || !Number.isFinite(s.radius) || s.radius === 0) return;
+  controls.target.copy(s.center);
+  const fov = (camera.fov * Math.PI) / 180;
+  const dist = (s.radius / Math.sin(fov / 2)) * 1.25;
+  camera.position.set(s.center.x, s.center.y, s.center.z + dist);
+  camera.near = Math.max(0.1, dist / 1000);
+  camera.far = dist * 1000;
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 // ===== On-demand render (no animation loop) =====
