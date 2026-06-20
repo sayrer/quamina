@@ -141,6 +141,10 @@ func (ld *lazyDFA) populateScratchState(nextNFAStates []*faState, writeIdx int) 
 // Creates and caches a new state if one doesn't exist and the cache isn't full.
 // Returns nil if the cache is full (caller creates a temporary uncached state).
 // No synchronization needed - this is called from per-goroutine nfaBuffers.
+//
+// INVARIANT: this method must NOT mutate its nfaStates argument or any element
+// of scratchNFA — it only reads them (copying via computeKey/makeState). Callers
+// may safely pass a scratchNFA slice as the argument.
 func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	keyBytes := ld.computeKey(nfaStates)
 
@@ -255,6 +259,10 @@ func traverseLazyDFA(start *faState, val []byte, transitions []*fieldMatcher, ld
 		currentState = ld.getOrCreateState(startStates)
 		if currentState == nil {
 			// Cache full at start — use a scratch state to avoid allocation.
+			// When startStates aliases scratchNFA[writeIdx] (sentinel path above),
+			// the append below is a safe no-op: getOrCreateState does not mutate
+			// scratchNFA or its slice argument, and scratchNFAIdx is unchanged so
+			// writeIdx resolves to the same buffer index in both computations.
 			writeIdx := 1 - ld.scratchNFAIdx
 			ld.scratchNFA[writeIdx] = append(ld.scratchNFA[writeIdx][:0], startStates...)
 			currentState = ld.populateScratchState(ld.scratchNFA[writeIdx], writeIdx)
@@ -289,6 +297,8 @@ func traverseLazyDFA(start *faState, val []byte, transitions []*fieldMatcher, ld
 		}
 		currentState = nextState
 	}
+	// No post-loop scan needed: each nextState.fieldTransitions is folded into
+	// fieldSet inside the loop before currentState advances, so nothing is missed.
 
 	if len(fieldSet) == 0 {
 		return nil
