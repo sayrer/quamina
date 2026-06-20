@@ -72,7 +72,8 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 			qNum, err := qNumFromBytesBuf(val, &bufs.qNumBuf)
 			if err == nil {
 				if vmFields.isNondeterministic {
-					return traverseNFA(vmFields.start, qNum, transitions, bufs)
+					ld := bufs.getLazyDFA(vmFields.start)
+					return traverseLazyDFA(vmFields.start, qNum, transitions, ld, bufs)
 				}
 				return traverseDFA(vmFields.start, qNum, transitions)
 			}
@@ -80,7 +81,8 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 
 		// if it doesn't work as a Q number for some reason, go ahead and compare the string values
 		if vmFields.isNondeterministic {
-			return traverseNFA(vmFields.start, val, transitions, bufs)
+			ld := bufs.getLazyDFA(vmFields.start)
+			return traverseLazyDFA(vmFields.start, val, transitions, ld, bufs)
 		}
 		return traverseDFA(vmFields.start, val, transitions)
 

@@ -545,12 +545,20 @@ func TestEpsilonClosureRequired(t *testing.T) {
 	// disappears: reaching the accepting states required the multi-member
 	// closure, which self-processing of the splice state cannot replace.
 	clearEpsilonClosures(vm.fields().start, make(map[*faState]bool))
+	// the lazy DFA cache must be refreshed after an in-place NFA mutation
+	// (production always gets a fresh start identity via mergeFAStates; this
+	// artificial in-place clear does not)
+	bufs = newNfaBuffers()
 	if got := len(testTransitionOn(vm, []byte("az"), bufs)); got != 0 {
 		t.Fatalf("without closures: expected 0 transitions for \"az\" (closure required), got %d", got)
 	}
 
 	// Restore closures; matching works again.
 	epsilonClosure(vm.fields().start)
+	// the lazy DFA cache must be refreshed after an in-place NFA mutation
+	// (production always gets a fresh start identity via mergeFAStates; this
+	// artificial in-place clear does not)
+	bufs = newNfaBuffers()
 	if got := len(testTransitionOn(vm, []byte("az"), bufs)); got != 2 {
 		t.Errorf("after restore: expected 2 transitions for \"az\", got %d", got)
 	}
