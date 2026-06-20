@@ -1,192 +1,260 @@
-"use strict";
+// app.js — Three.js static 3D point-cloud NFA visualizer
+// ES module; import map in index.html resolves bare specifiers.
+
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import {
+  forceSimulation,
+  forceManyBody,
+  forceLink,
+  forceCenter,
+} from "d3-force-3d";
 
 // ===== State =====
-let nfaData = null;          // VizNFA from /api/nfa
+let nfaData = null;
 let activeNFANodes = new Set(); // cumulative set of NFA node ids materialized into DFA
-let simulation = null;
 
-// ===== D3 setup =====
-const svg = d3.select("#graph svg");
-const g = svg.append("g");
+// Three.js objects (set after buildScene)
+let renderer, camera, controls, scene;
+let pointsObj = null;       // THREE.Points (nodes)
+let byteLines = null;       // THREE.LineSegments (byte edges)
+let epsLines = null;        // THREE.LineSegments (epsilon edges)
+let nodePositions = [];     // [{x,y,z}] indexed by position in nfaData.nodes
 
-// Zoom / pan
-const zoom = d3.zoom()
-  .scaleExtent([0.1, 4])
-  .on("zoom", e => g.attr("transform", e.transform));
-svg.call(zoom);
+// Node-id to array-index map
+let nodeIndexById = {};
 
-// Arrow markers for directed edges
-const defs = svg.append("defs");
-function addMarker(id, color) {
-  defs.append("marker")
-    .attr("id", id)
-    .attr("viewBox", "0 -5 10 10")
-    .attr("refX", 18)
-    .attr("refY", 0)
-    .attr("markerWidth", 6)
-    .attr("markerHeight", 6)
-    .attr("orient", "auto")
-    .append("path")
-    .attr("d", "M0,-5L10,0L0,5")
-    .attr("fill", color);
-}
-addMarker("arrow-byte",    "#991b1b");
-addMarker("arrow-epsilon", "#475569");
-addMarker("arrow-active",  "#d97706");
+// Colors (as THREE.Color components)
+const C_NORMAL  = new THREE.Color("#64748b"); // slate
+const C_ACCEPT  = new THREE.Color("#2dd4bf"); // teal
+const C_EPS     = new THREE.Color("#334155"); // dim
+const C_ACTIVE  = new THREE.Color("#d97706"); // gold
 
 // ===== Init =====
 async function init() {
-  // Load NFA
-  const nfaRes = await fetch("/api/nfa");
+  const [nfaRes, wordsRes] = await Promise.all([
+    fetch("/api/nfa"),
+    fetch("/api/words"),
+  ]);
   nfaData = await nfaRes.json();
-
-  // Load word chips
-  const wordsRes = await fetch("/api/words");
   const words = await wordsRes.json();
+
   renderChips(words);
-
-  renderGraph();
+  buildScene();
 }
 
-// ===== Graph rendering =====
-function renderGraph() {
-  g.selectAll("*").remove();
+// ===== 3D scene =====
+function buildScene() {
+  const container = document.getElementById("graph");
+  const w = container.clientWidth  || 800;
+  const h = container.clientHeight || 600;
 
-  if (!nfaData) return;
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(w, h);
+  renderer.setClearColor(0x0f1117);
+  container.appendChild(renderer.domElement);
 
-  const nodes = nfaData.nodes.map(n => ({ ...n }));
-  // d3.forceLink needs `source`/`target`; the export emits `from`/`to`.
-  const edges = nfaData.edges.map(e => ({ ...e, source: e.from, target: e.to }));
+  // Scene + camera
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 10000);
+  camera.position.set(0, 0, 600);
 
-  // Build node-index lookup
-  const nodeById = {};
-  nodes.forEach(n => nodeById[n.id] = n);
+  // OrbitControls — render on demand only; damping disabled (needs rAF loop)
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = false;
+  controls.addEventListener("change", renderFrame);
 
-  // Simulation
-  const width  = document.getElementById("graph").clientWidth  || 800;
-  const height = document.getElementById("graph").clientHeight || 600;
+  // Compute layout once, freeze it
+  computeLayout();
 
-  simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(edges)
-      .id(d => d.id)
-      .distance(d => d.kind === "epsilon" ? 45 : 70)
-      .strength(0.5))
-    .force("charge", d3.forceManyBody().strength(-220))
-    .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("collision", d3.forceCollide(18));
+  // Build geometry from frozen positions
+  buildPointCloud();
+  buildEdgeLines();
 
-  // Edges
-  const link = g.append("g").attr("class", "links")
-    .selectAll("line")
-    .data(edges)
-    .join("line")
-    .attr("class", d => `link ${d.kind}`)
-    .attr("marker-end", d => `url(#arrow-${d.kind})`);
+  // One initial render
+  renderFrame();
 
-  // Edge labels
-  const edgeLabel = g.append("g").attr("class", "edge-labels")
-    .selectAll("text")
-    .data(edges)
-    .join("text")
-    .attr("class", d => `edge-label ${d.kind}`)
-    .text(d => d.label);
+  // Resize handling
+  window.addEventListener("resize", onResize);
 
-  // Nodes
-  const node = g.append("g").attr("class", "nodes")
-    .selectAll("g")
-    .data(nodes)
-    .join("g")
-    .attr("class", d => {
-      const classes = ["node"];
-      if (d.accept) classes.push("accept");
-      else if (d.epsilonOnly) classes.push("epsilon-only");
-      else classes.push("normal");
-      if (activeNFANodes.has(d.id)) classes.push("active");
-      return classes.join(" ");
-    })
-    .call(d3.drag()
-      .on("start", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x; d.fy = d.y;
-      })
-      .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
-      .on("end", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null; d.fy = null;
-      }));
+  // ε-edge toggle
+  document.getElementById("show-eps").addEventListener("change", e => {
+    if (epsLines) epsLines.visible = e.target.checked;
+    renderFrame();
+  });
+}
 
-  // Accept nodes get a double ring; others get a single circle
-  node.each(function(d) {
-    const sel = d3.select(this);
-    const r = d.epsilonOnly ? 7 : 10;
-    if (d.accept) {
-      sel.append("circle").attr("class", "outer").attr("r", r + 4);
-      sel.append("circle").attr("class", "inner").attr("r", r);
+// ===== Layout: compute once, never animate =====
+function computeLayout() {
+  if (!nfaData || !nfaData.nodes || !nfaData.nodes.length) return;
+
+  const nodes = nfaData.nodes.map(n => ({ id: n.id }));
+
+  // Build link objects for d3-force-3d (needs source/target)
+  const links = (nfaData.edges || []).map(e => ({
+    source: e.from,
+    target: e.to,
+  }));
+
+  const sim = forceSimulation(nodes)
+    .numDimensions(3)
+    .force("charge", forceManyBody().strength(-180))
+    .force("link", forceLink(links).id(d => d.id).distance(80).strength(0.4))
+    .force("center", forceCenter(0, 0, 0))
+    .stop(); // never auto-run
+
+  // Converge synchronously — 300 ticks, no rendering between them
+  for (let i = 0; i < 300; i++) sim.tick();
+
+  // Snapshot final positions; build index map
+  nodeIndexById = {};
+  nodePositions = nodes.map((n, idx) => {
+    nodeIndexById[n.id] = idx;
+    return { x: n.x, y: n.y, z: n.z };
+  });
+}
+
+// ===== Point cloud geometry =====
+function buildPointCloud() {
+  const n = nfaData.nodes.length;
+  const positions = new Float32Array(n * 3);
+  const colors    = new Float32Array(n * 3);
+  const sizes     = new Float32Array(n);
+
+  nfaData.nodes.forEach((node, i) => {
+    const p = nodePositions[i];
+    positions[i * 3]     = p.x;
+    positions[i * 3 + 1] = p.y;
+    positions[i * 3 + 2] = p.z;
+
+    let c;
+    if (node.accept) {
+      c = C_ACCEPT;
+      sizes[i] = 10;
+    } else if (node.epsilonOnly) {
+      c = C_EPS;
+      sizes[i] = 5;
     } else {
-      sel.append("circle").attr("r", r);
+      c = C_NORMAL;
+      sizes[i] = 8;
     }
+    colors[i * 3]     = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
   });
 
-  node.append("text")
-    .attr("class", "node-label")
-    .attr("dy", "0.35em")
-    .attr("text-anchor", "middle")
-    .text(d => d.id);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color",    new THREE.BufferAttribute(colors,    3));
+  geo.setAttribute("size",     new THREE.BufferAttribute(sizes,     1));
 
-  // Simulation tick
-  simulation.on("tick", () => {
-    link
-      .attr("x1", d => d.source.x)
-      .attr("y1", d => d.source.y)
-      .attr("x2", d => d.target.x)
-      .attr("y2", d => d.target.y);
-
-    edgeLabel
-      .attr("x", d => (d.source.x + d.target.x) / 2)
-      .attr("y", d => (d.source.y + d.target.y) / 2);
-
-    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  const mat = new THREE.PointsMaterial({
+    vertexColors: true,
+    sizeAttenuation: true,
+    size: 8,
   });
+
+  pointsObj = new THREE.Points(geo, mat);
+  scene.add(pointsObj);
 }
 
-// Update visual state after a feed (re-apply classes without rebuilding sim)
-function updateActiveClasses() {
-  if (!nfaData) return;
+// ===== Edge line geometry =====
+function buildEdgeLines() {
+  if (!nfaData.edges || !nfaData.edges.length) return;
 
-  g.selectAll(".node").attr("class", d => {
-    const classes = ["node"];
-    if (d.accept) classes.push("accept");
-    else if (d.epsilonOnly) classes.push("epsilon-only");
-    else classes.push("normal");
-    if (activeNFANodes.has(d.id)) classes.push("active");
-    return classes.join(" ");
+  const byteEdges    = nfaData.edges.filter(e => e.kind === "byte");
+  const epsilonEdges = nfaData.edges.filter(e => e.kind === "epsilon");
+
+  byteLines = makeLineSegments(byteEdges, "#991b1b", 0.7);
+  epsLines  = makeLineSegments(epsilonEdges, "#475569", 0.3);
+  epsLines.visible = false; // hidden by default; toggle with checkbox
+
+  scene.add(byteLines);
+  scene.add(epsLines);
+}
+
+function makeLineSegments(edges, colorHex, opacity) {
+  const positions = new Float32Array(edges.length * 6); // 2 verts × 3 floats each
+  const colors    = new Float32Array(edges.length * 6);
+
+  const c = new THREE.Color(colorHex);
+  edges.forEach((e, i) => {
+    const fi = nodeIndexById[e.from];
+    const ti = nodeIndexById[e.to];
+    if (fi === undefined || ti === undefined) return;
+
+    const fp = nodePositions[fi];
+    const tp = nodePositions[ti];
+
+    positions[i * 6]     = fp.x;
+    positions[i * 6 + 1] = fp.y;
+    positions[i * 6 + 2] = fp.z;
+    positions[i * 6 + 3] = tp.x;
+    positions[i * 6 + 4] = tp.y;
+    positions[i * 6 + 5] = tp.z;
+
+    for (let v = 0; v < 2; v++) {
+      colors[(i * 2 + v) * 3]     = c.r;
+      colors[(i * 2 + v) * 3 + 1] = c.g;
+      colors[(i * 2 + v) * 3 + 2] = c.b;
+    }
   });
 
-  // Highlight byte-edges between two highlighted nodes
-  g.selectAll(".link").attr("class", d => {
-    const srcId = (typeof d.source === "object") ? d.source.id : d.source;
-    const tgtId = (typeof d.target === "object") ? d.target.id : d.target;
-    if (d.kind === "byte" && activeNFANodes.has(srcId) && activeNFANodes.has(tgtId)) {
-      return "link active";
-    }
-    return `link ${d.kind}`;
-  }).attr("marker-end", d => {
-    const srcId = (typeof d.source === "object") ? d.source.id : d.source;
-    const tgtId = (typeof d.target === "object") ? d.target.id : d.target;
-    if (d.kind === "byte" && activeNFANodes.has(srcId) && activeNFANodes.has(tgtId)) {
-      return "url(#arrow-active)";
-    }
-    return `url(#arrow-${d.kind})`;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("color",    new THREE.BufferAttribute(colors,    3));
+
+  const mat = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: opacity < 1,
+    opacity,
   });
 
-  g.selectAll(".edge-label").attr("class", d => {
-    const srcId = (typeof d.source === "object") ? d.source.id : d.source;
-    const tgtId = (typeof d.target === "object") ? d.target.id : d.target;
-    if (d.kind === "byte" && activeNFANodes.has(srcId) && activeNFANodes.has(tgtId)) {
-      return "edge-label active";
+  return new THREE.LineSegments(geo, mat);
+}
+
+// ===== On-demand render (no animation loop) =====
+function renderFrame() {
+  renderer.render(scene, camera);
+}
+
+// ===== Update colors after feed (no relayout) =====
+function updatePointColors() {
+  if (!pointsObj) return;
+
+  const colorAttr = pointsObj.geometry.getAttribute("color");
+
+  nfaData.nodes.forEach((node, i) => {
+    let c;
+    if (activeNFANodes.has(node.id)) {
+      c = C_ACTIVE;
+    } else if (node.accept) {
+      c = C_ACCEPT;
+    } else if (node.epsilonOnly) {
+      c = C_EPS;
+    } else {
+      c = C_NORMAL;
     }
-    return `edge-label ${d.kind}`;
+    colorAttr.setXYZ(i, c.r, c.g, c.b);
   });
+  colorAttr.needsUpdate = true;
+}
+
+function updateByteEdgeColors() {
+  if (!byteLines) return;
+
+  const colorAttr = byteLines.geometry.getAttribute("color");
+  const byteEdges = nfaData.edges.filter(e => e.kind === "byte");
+
+  byteEdges.forEach((e, i) => {
+    const bothActive = activeNFANodes.has(e.from) && activeNFANodes.has(e.to);
+    const c = bothActive ? C_ACTIVE : new THREE.Color("#991b1b");
+    colorAttr.setXYZ(i * 2,     c.r, c.g, c.b);
+    colorAttr.setXYZ(i * 2 + 1, c.r, c.g, c.b);
+  });
+  colorAttr.needsUpdate = true;
 }
 
 // ===== Feed =====
@@ -210,13 +278,28 @@ async function feedWord(word) {
   (feed.dfaStates || []).forEach(ds => {
     (ds.nfaNodes || []).forEach(id => activeNFANodes.add(id));
   });
-  updateActiveClasses();
+
+  // Recolor point cloud and byte edges, then re-render
+  updatePointColors();
+  updateByteEdgeColors();
+  renderFrame();
 
   // Update panels
   renderMatches(feed.matches || [], word);
   renderStats(feed.stats || {});
   renderDFAStates(feed.dfaStates || []);
   markChipMatched(word, feed.matches || []);
+}
+
+// ===== Resize =====
+function onResize() {
+  const container = document.getElementById("graph");
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  renderFrame();
 }
 
 // ===== Chip rendering =====
@@ -237,8 +320,7 @@ function renderChips(words) {
 
 function markChipMatched(word, matches) {
   if (matches.length === 0) return;
-  const chips = document.querySelectorAll(".chip");
-  chips.forEach(c => {
+  document.querySelectorAll(".chip").forEach(c => {
     if (c.dataset.word === word) c.classList.add("matched");
   });
 }
@@ -264,11 +346,11 @@ function renderMatches(matches, word) {
 // ===== Stats panel =====
 function renderStats(stats) {
   const fields = [
-    ["states",    "DFA States"],
-    ["creates",   "Creates"],
-    ["hits",      "Cache Hits"],
-    ["misses",    "Cache Misses"],
-    ["cacheBytes","Cache Bytes"],
+    ["states",     "DFA States"],
+    ["creates",    "Creates"],
+    ["hits",       "Cache Hits"],
+    ["misses",     "Cache Misses"],
+    ["cacheBytes", "Cache Bytes"],
   ];
   const grid = document.getElementById("stats-grid");
   grid.innerHTML = "";
@@ -310,15 +392,6 @@ document.getElementById("feed-btn").addEventListener("click", () => {
 });
 document.getElementById("word-input").addEventListener("keydown", e => {
   if (e.key === "Enter") feedWord(e.target.value);
-});
-
-window.addEventListener("resize", () => {
-  if (simulation) {
-    const width  = document.getElementById("graph").clientWidth;
-    const height = document.getElementById("graph").clientHeight;
-    simulation.force("center", d3.forceCenter(width / 2, height / 2));
-    simulation.alpha(0.3).restart();
-  }
 });
 
 init();

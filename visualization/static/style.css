@@ -45,6 +45,12 @@ header h1 {
 .swatch.nfa    { background: #8b1414; }
 .swatch.active { background: #d97706; }
 .swatch.eps    { background: #64748b; border: none; }
+.eps-toggle {
+  font-size: 0.75rem;
+  color: #64748b;
+  cursor: pointer;
+  gap: 4px;
+}
 
 /* ===== Main layout ===== */
 .layout {
@@ -59,66 +65,11 @@ header h1 {
   overflow: hidden;
   position: relative;
 }
-#graph svg {
-  width: 100%;
-  height: 100%;
+#graph canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
-
-/* SVG elements */
-.node circle {
-  stroke-width: 2;
-  cursor: pointer;
-}
-.node.normal circle {
-  fill: #1e2130;
-  stroke: #7f1d1d; /* dark red NFA */
-}
-.node.accept circle.outer {
-  fill: none;
-  stroke: #7f1d1d;
-}
-.node.accept circle.inner {
-  fill: #1e2130;
-  stroke: #7f1d1d;
-}
-.node.epsilon-only circle {
-  opacity: 0.55;
-}
-
-/* Active (materialized into DFA) */
-.node.active circle,
-.node.active circle.inner {
-  fill: #78350f;
-  stroke: #d97706;
-}
-.node.active circle.outer {
-  fill: none;
-  stroke: #d97706;
-}
-
-.link {
-  fill: none;
-  stroke-width: 1.5;
-}
-.link.byte    { stroke: #991b1b; }
-.link.epsilon { stroke: #475569; stroke-dasharray: 5,3; }
-.link.active  { stroke: #d97706; stroke-width: 2.5; }
-
-.edge-label {
-  fill: #94a3b8;
-  font-size: 9px;
-  pointer-events: none;
-}
-.edge-label.byte    { fill: #fca5a5; }
-.edge-label.epsilon { fill: #64748b; }
-.edge-label.active  { fill: #fcd34d; }
-
-.node-label {
-  fill: #cbd5e1;
-  font-size: 9px;
-  pointer-events: none;
-}
-.node.active .node-label { fill: #fef3c7; }
 
 /* ===== Side panel ===== */
 .panel {

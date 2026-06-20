@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Quamina NFA / Lazy-DFA Visualizer</title>
   <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "d3-force-3d": "https://cdn.jsdelivr.net/npm/d3-force-3d@3/+esm"
+    }
+  }
+  </script>
 </head>
 <body>
   <header>
@@ -19,14 +28,15 @@
       <span class="legend-item">
         <span class="swatch active"></span> materialized into DFA (cumulative)
       </span>
+      <label class="legend-item eps-toggle">
+        <input type="checkbox" id="show-eps" /> show ε edges
+      </label>
     </div>
   </header>
 
   <div class="layout">
-    <!-- Force-directed NFA graph -->
-    <div id="graph">
-      <svg></svg>
-    </div>
+    <!-- 3D point cloud canvas (Three.js appends here) -->
+    <div id="graph"></div>
 
     <!-- Side panel -->
     <aside class="panel">
@@ -64,7 +74,6 @@
     </aside>
   </div>
 
-  <script src="https://d3js.org/d3.v7.min.js"></script>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
