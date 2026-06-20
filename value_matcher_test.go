@@ -542,8 +542,19 @@ func TestEpsilonClosureRequired(t *testing.T) {
 	}
 
 	// Clear all closures to simulate a skipped epsilonClosure call. The match
-	// disappears: reaching the accepting states required the multi-member
-	// closure, which self-processing of the splice state cannot replace.
+	// disappears on the raw NFA/lazy-DFA path: reaching the accepting states
+	// required the multi-member closure, which self-processing of the splice
+	// state cannot replace.
+	//
+	// The eager DFA (dfaStart) is a pre-computed deterministic table that
+	// bypasses epsilon closures entirely and would still return the correct
+	// answer. We therefore null it out before the raw-NFA test so that the
+	// lazy/NFA path is exercised — mirroring what the lazy_dfa reference does
+	// for its dfaTable field. This is not weakening the test; the eager DFA
+	// correctness is already covered by the "with closures" check above.
+	fields := vm.getFieldsForUpdate()
+	fields.dfaStart = nil // bypass eager DFA to exercise the NFA / lazy-DFA path
+	vm.update(fields)
 	clearEpsilonClosures(vm.fields().start, make(map[*faState]bool))
 	// the lazy DFA cache must be refreshed after an in-place NFA mutation
 	// (production always gets a fresh start identity via a fresh vmFields.start allocation on every pattern merge; this

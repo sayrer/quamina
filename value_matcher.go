@@ -22,12 +22,19 @@ import (
 type valueMatcher struct {
 	updateable atomic.Pointer[vmFields]
 }
+// maxEagerDFAStates is the state budget for eager NFA-to-DFA conversion at
+// pattern-add time. If the conversion completes within budget, the DFA is
+// stored and used via the fast traverseDFA path. Otherwise, lazy DFA is used.
+const maxEagerDFAStates = 500
+
 type vmFields struct {
 	start               *faState
+	dfaStart            *faState // eagerly-converted DFA when within budget; nil = use lazy
 	singletonMatch      []byte
 	singletonTransition *fieldMatcher
 	hasNumbers          bool
 	isNondeterministic  bool
+	eagerDFAFailed      bool // true once eager conversion exceeded budget; skip future attempts
 }
 
 func (m *valueMatcher) fields() *vmFields {
@@ -72,6 +79,9 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 			qNum, err := qNumFromBytesBuf(val, &bufs.qNumBuf)
 			if err == nil {
 				if vmFields.isNondeterministic {
+					if vmFields.dfaStart != nil {
+						return traverseDFA(vmFields.dfaStart, qNum, transitions)
+					}
 					ld := bufs.getLazyDFA(vmFields.start)
 					return traverseLazyDFA(vmFields.start, qNum, transitions, ld, bufs)
 				}
@@ -81,6 +91,9 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 
 		// if it doesn't work as a Q number for some reason, go ahead and compare the string values
 		if vmFields.isNondeterministic {
+			if vmFields.dfaStart != nil {
+				return traverseDFA(vmFields.dfaStart, val, transitions)
+			}
 			ld := bufs.getLazyDFA(vmFields.start)
 			return traverseLazyDFA(vmFields.start, val, transitions, ld, bufs)
 		}
@@ -90,6 +103,24 @@ func (m *valueMatcher) transitionOn(eventField *Field, bufs *nfaBuffers) []*fiel
 		// no FA, no singleton, nothing to do, this probably can't happen because a flattener
 		// shouldn't preserve a field that hasn't appeared in a pattern
 		return transitions
+	}
+}
+
+// tryEagerDFA attempts eager NFA-to-DFA conversion on fields.start when the
+// automaton is nondeterministic and the budget has not yet been exceeded.
+// On success, fields.dfaStart is set for fast traverseDFA dispatch.
+// On budget exhaustion, fields.dfaStart is cleared and fields.eagerDFAFailed
+// is set so future AddPattern calls skip conversion (a larger NFA will only
+// produce more DFA states).
+func tryEagerDFA(fields *vmFields) {
+	if !fields.isNondeterministic || fields.start == nil || fields.eagerDFAFailed {
+		return
+	}
+	if dfa := nfa2DfaWithBudget(fields.start, maxEagerDFAStates); dfa != nil {
+		fields.dfaStart = dfa
+	} else {
+		fields.dfaStart = nil
+		fields.eagerDFAFailed = true
 	}
 }
 
@@ -159,6 +190,8 @@ func (m *valueMatcher) addTransition(val typedVal, printer printer, bufs *closur
 			if buildMode == BuiltForSpeed {
 				fields.start = nfa2Dfa(fields.start)
 				fields.isNondeterministic = false
+			} else {
+				tryEagerDFA(fields)
 			}
 		}
 
@@ -179,6 +212,8 @@ func (m *valueMatcher) addTransition(val typedVal, printer printer, bufs *closur
 			if buildMode == BuiltForSpeed {
 				fields.start = nfa2Dfa(fields.start)
 				fields.isNondeterministic = false
+			} else {
+				tryEagerDFA(fields)
 			}
 		}
 		fields.singletonMatch = nil
@@ -191,6 +226,8 @@ func (m *valueMatcher) addTransition(val typedVal, printer printer, bufs *closur
 			if buildMode == BuiltForSpeed {
 				fields.start = nfa2Dfa(fields.start)
 				fields.isNondeterministic = false
+			} else {
+				tryEagerDFA(fields)
 			}
 		}
 	}

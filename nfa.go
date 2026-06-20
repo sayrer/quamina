@@ -190,11 +190,20 @@ func nfa2Dfa(nfaStart *faState) *faState {
 	return n2dNode(startNfa, newStateLists())
 }
 
+// nfa2DfaWithBudget is like nfa2Dfa but limits the number of DFA states created.
+// It returns nil if more than budget distinct DFA states would be created.
+// epsilonClosureInto must have been called on nfaStart before this is invoked.
+func nfa2DfaWithBudget(nfaStart *faState, budget int) *faState {
+	nfaStart.epsilonClosure = selfOnlyClosure
+	startNfa := []*faState{nfaStart}
+	return n2dNode(startNfa, newStateListsWithBudget(budget))
+}
+
 // n2dNode input is a list of NFA states, which are all the states that are either the
 // singleton start state or the states that can be reached from a previous state on
 // a byte transition.
 // It returns a DFA state (i.e. no epsilons) that corresponds to this aggregation of
-// NFA states.
+// NFA states, or nil if the budget was exceeded.
 func n2dNode(rawNStates []*faState, sList *stateLists) *faState {
 	// we expand the raw list of states by adding the epsilon closure of each
 	nStates := make([]*faState, 0, len(rawNStates))
@@ -210,6 +219,9 @@ func n2dNode(rawNStates []*faState, sList *stateLists) *faState {
 	// as a set, may be equal to a previous set of states, in which case the
 	// corresponding DFA will have already been constructed.
 	ingredients, dfaState, alreadyExists := sList.intern(nStates)
+	if sList.overBudget {
+		return nil
+	}
 	if alreadyExists {
 		return dfaState
 	}
@@ -244,7 +256,11 @@ func n2dNode(rawNStates []*faState, sList *stateLists) *faState {
 		// if there were any transitions on this byte value
 		if len(rawStates) > 0 {
 			// recurse, get the DFA state for the transitions and plug it into this state
-			dfaUnpacked[utf8byte] = n2dNode(rawStates, sList)
+			child := n2dNode(rawStates, sList)
+			if child == nil {
+				return nil // budget exceeded in recursive call
+			}
+			dfaUnpacked[utf8byte] = child
 		}
 	}
 	dfaState.table.pack(dfaUnpacked)

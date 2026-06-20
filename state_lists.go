@@ -22,11 +22,24 @@ type stateLists struct {
 	// Scratch space reused across intern() calls
 	sortBuf []*faState // reusable sorted buffer
 	keyBuf  []byte     // reusable key bytes buffer
+	// Budget-limited conversion: budget > 0 means a cap is active.
+	// overBudget is set when the cap is exceeded; callers check it to abort.
+	budget     int
+	overBudget bool
 }
 
 func newStateLists() *stateLists {
 	return &stateLists{
 		entries: make(map[string]internEntry),
+	}
+}
+
+// newStateListsWithBudget returns a stateLists that aborts (sets overBudget)
+// once more than budget distinct DFA states have been created.
+func newStateListsWithBudget(budget int) *stateLists {
+	return &stateLists{
+		entries: make(map[string]internEntry),
+		budget:  budget,
 	}
 }
 
@@ -68,6 +81,15 @@ func (sl *stateLists) intern(list []*faState) ([]*faState, *faState, bool) {
 	key := string(sl.keyBuf)
 	stored := make([]*faState, len(sl.sortBuf))
 	copy(stored, sl.sortBuf)
+
+	// Budget check: if a cap is active and we have exhausted it, signal the caller.
+	if sl.budget > 0 {
+		sl.budget--
+		if sl.budget <= 0 {
+			sl.overBudget = true
+			return nil, nil, false
+		}
+	}
 
 	dfaState := &faState{table: newSmallTable()}
 	sl.entries[key] = internEntry{states: stored, dfaState: dfaState}
