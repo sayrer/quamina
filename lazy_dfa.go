@@ -35,6 +35,12 @@ type lazyDFAState struct {
 	// Temporary (uncached) states skip cache lookups on transitions
 	// to avoid expensive key computation that almost always misses.
 	cached bool
+
+	// pendingKeys holds bytes whose transition out of this (cached) state has
+	// been computed exactly once. A transition is only promoted into the cache
+	// (transKeys/transValues) the second time it is taken, so a high-cardinality
+	// event stream doesn't fill the cache with one-shot states it never reuses.
+	pendingKeys []byte
 }
 
 // maxLazyDFACacheBytes is the approximate memory budget per lazy DFA cache.
@@ -228,10 +234,26 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 	}
 
 	if state.cached {
+		// Cache a transition only the second time it is taken. The next
+		// state-set for (state, b) is deterministic, so a repeated (state, b)
+		// always yields the same result — safe to promote on the second sight.
+		if bytes.IndexByte(state.pendingKeys, b) < 0 {
+			// First sight: remember the byte, return a transient scratch state
+			// (no cached-state allocation). The pending byte is tiny and
+			// transient, so it isn't charged against the cache budget.
+			state.pendingKeys = append(state.pendingKeys, b)
+			return ld.populateScratchState(nextNFAStates, writeIdx)
+		}
+		// Second sight: promote into the cache.
 		nextState := ld.getOrCreateState(nextNFAStates)
 		if nextState != nil {
 			state.transKeys = append(state.transKeys, b)
 			state.transValues = append(state.transValues, nextState)
+			if i := bytes.IndexByte(state.pendingKeys, b); i >= 0 {
+				last := len(state.pendingKeys) - 1
+				state.pendingKeys[i] = state.pendingKeys[last]
+				state.pendingKeys = state.pendingKeys[:last]
+			}
 			ld.cacheBytes += 9 // 1 byte key + 8 byte pointer
 			return nextState
 		}
