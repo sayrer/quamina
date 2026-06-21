@@ -25,17 +25,31 @@ func subseqRule(field, sig string) string {
 }
 
 // buildTelemetryMatcher builds a matcher whose lazy-DFA working set exceeds the
-// cache budget (N distinct wildcard rules on "src").
-func buildTelemetryMatcher(tb testing.TB) *Quamina {
+// cache budget (130 distinct wildcard rules on "src").
+func buildTelemetryMatcher(tb testing.TB) *Quamina { return buildTelemetryMatcherN(tb, 130) }
+
+// buildTelemetryMatcherN builds a matcher with n distinct wildcard rules on
+// "src". At n=130 the lazy-DFA working set exceeds the 8MB budget (eviction
+// engages); at small n it fits (eviction never fires).
+func buildTelemetryMatcherN(tb testing.TB, n int) *Quamina {
 	q, _ := New()
-	const N = 130
-	for i := 0; i < N; i++ {
+	for i := 0; i < n; i++ {
 		sig := fmt.Sprintf("%04x", (i*2654435761)&0xffff)
 		if err := q.AddPattern(fmt.Sprintf("p%d", i), subseqRule("src", sig)); err != nil {
 			tb.Fatal(err)
 		}
 	}
 	return q
+}
+
+// rollingSnapshot reads cumulative eviction and hit/miss counters across the
+// per-goroutine lazy DFA caches.
+func rollingSnapshot(q *Quamina) (evictions, hits, misses int) {
+	for _, ld := range q.bufs.lazyDFACaches {
+		evictions += ld.evictions
+	}
+	_, _, _, h, m, _ := q.bufs.lazyDFAStats()
+	return evictions, h, m
 }
 
 // telemetryEvent is the d-th distinct {src: ipv6, ts: timestamp} event.
@@ -106,21 +120,49 @@ func TestLazyDFAEvictionBounded(t *testing.T) {
 	t.Logf("100k rolling events: %d KB cached (budget %d KB), %d evictions", cb/1024, maxLazyDFACacheBytes/1024, ev)
 }
 
-// BenchmarkRollingWindow feeds a sliding window over a space far larger than the
-// cache, with locality (each value recurs a few times before the window slides).
-// The CLOCK cache keeps the live window cached; a frozen cache cannot.
-func BenchmarkRollingWindow(b *testing.B) {
-	q := buildTelemetryMatcher(b)
-	const W, dwell = 256, 4 * 256
-	for d := 0; d < 60000; d++ { // pre-saturate the cache
-		q.MatchesForEvent(telemetryEvent(d))
-	}
-	b.ResetTimer()
-	b.ReportAllocs()
-	i := 0
-	for b.Loop() {
-		cursor := i / dwell
-		q.MatchesForEvent(telemetryEvent(cursor + (i % W)))
-		i++
+// BenchmarkLazyDFARolling feeds a sliding window over a value space far larger
+// than the cache, with locality (each value recurs a few times before the window
+// slides). It reports throughput plus the eviction rate and cache hit rate, in
+// two regimes:
+//
+//   - fits_budget: few rules — the working set fits, so the cache never evicts
+//     (0 evict/op, ~full hit rate); eviction is inert here.
+//   - over_budget: many rules — the working set overflows, so CLOCK-LRU keeps the
+//     live window cached while reclaiming the retired one (evict/op > 0).
+//
+// To compare against the old freeze-at-budget behavior, benchstat this against a
+// build before the CLOCK commit (the eviction policy isn't a runtime toggle).
+func BenchmarkLazyDFARolling(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		patterns int
+	}{
+		{"fits_budget", 8},
+		{"over_budget", 130},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			q := buildTelemetryMatcherN(b, tc.patterns)
+			const W, dwell = 256, 4 * 256
+			for d := 0; d < 60000; d++ { // pre-saturate the cache
+				q.MatchesForEvent(telemetryEvent(d))
+			}
+			ev0, h0, m0 := rollingSnapshot(q)
+			b.ResetTimer()
+			b.ReportAllocs()
+			n := 0
+			for b.Loop() {
+				cursor := n / dwell
+				q.MatchesForEvent(telemetryEvent(cursor + (n % W)))
+				n++
+			}
+			b.StopTimer()
+			ev1, h1, m1 := rollingSnapshot(q)
+			if n > 0 {
+				b.ReportMetric(float64(ev1-ev0)/float64(n), "evict/op")
+			}
+			if d := (h1 - h0) + (m1 - m0); d > 0 {
+				b.ReportMetric(100*float64(h1-h0)/float64(d), "hit%")
+			}
+		})
 	}
 }
