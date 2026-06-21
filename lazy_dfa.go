@@ -41,6 +41,19 @@ type lazyDFAState struct {
 	// (transKeys/transValues) the second time it is taken, so a high-cardinality
 	// event stream doesn't fill the cache with one-shot states it never reuses.
 	pendingKeys []byte
+
+	// --- CLOCK-LRU eviction bookkeeping (only meaningful for cached states) ---
+	key        string     // this state's cache key, so evictState can delete it
+	parents    []backEdge // inbound transitions, so eviction can cut them
+	bytes      int        // approximate memory cost (for the cache budget)
+	referenced bool       // CLOCK reference bit: set on use, cleared by the hand
+}
+
+// backEdge records that src.transValues[...] (on byte b) points at some state,
+// so that when that state is evicted the inbound transition can be dropped.
+type backEdge struct {
+	src *lazyDFAState
+	b   byte
 }
 
 // maxLazyDFACacheBytes is the approximate memory budget per lazy DFA cache.
@@ -74,10 +87,97 @@ type lazyDFA struct {
 	scratchNFAIdx int             // which buffer holds current state's nfaStates
 	scratchFT     []*fieldMatcher // reusable fieldTransitions buffer
 
+	// CLOCK-LRU eviction: a ring of cached states swept by `hand`. On the budget
+	// the hand evicts unreferenced states (clearing the reference bit on the way),
+	// so the live working set survives while the cold tail is reclaimed.
+	order []*lazyDFAState // clock ring; a nil slot is an evicted state
+	hand  int
+
 	// Stats for understanding cache behavior (not used in production)
 	stateCreates   int // number of states created
 	transitionHits int // cache hits on transition lookup
 	transitionMiss int // cache misses on transition lookup
+	evictions      int // states evicted by the clock
+}
+
+// evictClock frees at least `need` bytes (best effort) by sweeping the clock:
+// referenced states get a second chance (bit cleared, skipped); unreferenced
+// states are evicted. This keeps recently-used (live-window) states cached.
+func (ld *lazyDFA) evictClock(need int) {
+	if len(ld.order) == 0 {
+		return
+	}
+	freed := 0
+	// At most two full passes: one to clear reference bits, one to evict.
+	for sweeps := 0; freed < need && sweeps < 2*len(ld.order); sweeps++ {
+		if ld.hand >= len(ld.order) {
+			ld.hand = 0
+		}
+		s := ld.order[ld.hand]
+		if s == nil {
+			ld.hand++
+			continue
+		}
+		if s.referenced {
+			s.referenced = false
+			ld.hand++
+			continue
+		}
+		freed += s.bytes + 9*(len(s.transKeys)+len(s.parents))
+		ld.evictState(s)
+		ld.order[ld.hand] = nil
+		ld.hand++
+		ld.evictions++
+	}
+	ld.compactOrder()
+}
+
+// evictState removes one cached state and cuts its edges so no dangling pointers
+// remain: inbound transitions are dropped (their sources will recompute), and
+// this state is removed from the parents list of every state it pointed to.
+func (ld *lazyDFA) evictState(s *lazyDFAState) {
+	for _, be := range s.parents { // drop inbound transitions
+		p := be.src
+		if i := bytes.IndexByte(p.transKeys, be.b); i >= 0 {
+			last := len(p.transKeys) - 1
+			p.transKeys[i] = p.transKeys[last]
+			p.transKeys = p.transKeys[:last]
+			p.transValues[i] = p.transValues[last]
+			p.transValues = p.transValues[:last]
+			ld.cacheBytes -= 9
+		}
+	}
+	for _, child := range s.transValues { // remove our back-edge from each child
+		for i := 0; i < len(child.parents); i++ {
+			if child.parents[i].src == s {
+				last := len(child.parents) - 1
+				child.parents[i] = child.parents[last]
+				child.parents = child.parents[:last]
+				i--
+			}
+		}
+	}
+	ld.cacheBytes -= s.bytes + 9*len(s.transKeys)
+	delete(ld.cache, s.key)
+	if ld.startState == s {
+		ld.startState = nil
+	}
+	s.cached = false
+}
+
+// compactOrder drops the nil (evicted) slots once they dominate the ring.
+func (ld *lazyDFA) compactOrder() {
+	if len(ld.order) < 64 || len(ld.order) < 2*len(ld.cache) {
+		return
+	}
+	live := ld.order[:0]
+	for _, s := range ld.order {
+		if s != nil {
+			live = append(live, s)
+		}
+	}
+	ld.order = live
+	ld.hand = 0
 }
 
 func newLazyDFA() *lazyDFA {
@@ -157,28 +257,31 @@ func (ld *lazyDFA) getOrCreateState(nfaStates []*faState) *lazyDFAState {
 	// Lookup using []byte — the Go compiler optimizes string(keyBytes) in map
 	// index expressions to avoid the allocation.
 	if state, exists := ld.cache[string(keyBytes)]; exists {
+		state.referenced = true // CLOCK: recently used
 		return state
-	}
-
-	// Cache full — return nil so caller creates a temporary state
-	if ld.cacheBytes >= maxLazyDFACacheBytes {
-		return nil
 	}
 
 	// Cache miss — allocate the string key for map storage.
 	key := string(keyBytes)
 	state := ld.makeState(nfaStates)
 	state.cached = true
-	ld.cache[key] = state
-
+	state.key = key
+	state.referenced = true
 	// Approximate memory cost of this cached state:
-	//   map key string:              len(nfaStates) * 8
-	//   lazyDFAState struct + slices: 96 bytes
-	//   nfaStates backing array:     len(nfaStates) * 8
-	//   fieldTransitions backing:    len(fieldTransitions) * 8
-	//   Go map entry overhead:       ~64 bytes
-	ld.cacheBytes += 96 + 64 + len(nfaStates)*16 + len(state.fieldTransitions)*8
+	//   map key string + nfaStates backing: len(nfaStates) * 16
+	//   lazyDFAState struct + slices:        96 bytes
+	//   fieldTransitions backing:            len(fieldTransitions) * 8
+	//   Go map entry overhead:               ~64 bytes
+	state.bytes = 96 + 64 + len(nfaStates)*16 + len(state.fieldTransitions)*8
 
+	// At the budget, evict the cold tail (CLOCK) to make room rather than freezing.
+	if ld.cacheBytes+state.bytes > maxLazyDFACacheBytes {
+		ld.evictClock(state.bytes)
+	}
+
+	ld.cache[key] = state
+	ld.cacheBytes += state.bytes
+	ld.order = append(ld.order, state)
 	return state
 }
 
@@ -189,7 +292,9 @@ func (ld *lazyDFA) step(state *lazyDFAState, b byte) *lazyDFAState {
 	// Fast path: already cached (bytes.IndexByte is a SIMD intrinsic on amd64/arm64)
 	if idx := bytes.IndexByte(state.transKeys, b); idx >= 0 {
 		ld.transitionHits++
-		return state.transValues[idx]
+		next := state.transValues[idx]
+		next.referenced = true // CLOCK: recently used
+		return next
 	}
 
 	// Slow path: compute the next state
@@ -234,6 +339,7 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 	}
 
 	if state.cached {
+		state.referenced = true // CLOCK: the source state is in use
 		// Cache a transition only the second time it is taken. The next
 		// state-set for (state, b) is deterministic, so a repeated (state, b)
 		// always yields the same result — safe to promote on the second sight.
@@ -244,19 +350,22 @@ func (ld *lazyDFA) computeStep(state *lazyDFAState, b byte) *lazyDFAState {
 			state.pendingKeys = append(state.pendingKeys, b)
 			return ld.populateScratchState(nextNFAStates, writeIdx)
 		}
-		// Second sight: promote into the cache.
+		// Second sight: promote into the cache (this may evict the cold tail).
 		nextState := ld.getOrCreateState(nextNFAStates)
-		if nextState != nil {
+		// Eviction could in principle reclaim `state` itself; only link the
+		// transition if it survived (else it just recomputes next time).
+		if state.cached {
 			state.transKeys = append(state.transKeys, b)
 			state.transValues = append(state.transValues, nextState)
+			nextState.parents = append(nextState.parents, backEdge{src: state, b: b})
 			if i := bytes.IndexByte(state.pendingKeys, b); i >= 0 {
 				last := len(state.pendingKeys) - 1
 				state.pendingKeys[i] = state.pendingKeys[last]
 				state.pendingKeys = state.pendingKeys[:last]
 			}
 			ld.cacheBytes += 9 // 1 byte key + 8 byte pointer
-			return nextState
 		}
+		return nextState
 	}
 
 	return ld.populateScratchState(nextNFAStates, writeIdx)
